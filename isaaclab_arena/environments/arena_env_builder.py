@@ -187,7 +187,7 @@ class ArenaEnvBuilder:
         fields = [(m.name, MetricTermCfg, m.get_metric_term_cfg()) for m in metrics]
         return make_configclass("MetricsCfg", fields)()
 
-    def _compose_termination_cfg(
+    def _build_termination_manager_cfg(
         self,
         task_termination_cfg: TaskTerminationCfg,
         scene_termination_cfg: object | None,
@@ -326,7 +326,7 @@ class ArenaEnvBuilder:
             placement_event_cfg,
             variations_event_cfg,
         )
-        termination_cfg = self._compose_termination_cfg(
+        termination_cfg = self._build_termination_manager_cfg(
             task_termination_cfg,
             self.arena_env.scene.get_termination_cfg(),
             embodiment.get_termination_cfg(),
