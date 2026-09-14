@@ -32,6 +32,7 @@ def _make_environment_and_manager(predicate_names):
         sim=SimpleNamespace(is_playing=lambda: True),
         scene={},
         extras={},
+        _progress_tracker=None,
         episode_length_buf=torch.zeros(2, dtype=torch.long),
         predicate_results={name: torch.ones(2, dtype=torch.bool) for name in predicate_names},
         predicate_calls={name: 0 for name in predicate_names},
@@ -46,7 +47,7 @@ def _make_environment_and_manager(predicate_names):
     # Isaac Lab constructs recorders before the termination manager that owns progress.
     recorder_cfg = ProgressTrackingRecorderCfg()
     recorder = recorder_cfg.class_type(recorder_cfg, env)
-    assert not hasattr(env, "_progress_tracker")
+    assert env._progress_tracker is None
     manager = TerminationManager(
         {"success": TerminationTermCfg(func=ProgressBasedSuccessTerm, params={"progress_objectives": objectives})},
         env,
@@ -199,6 +200,19 @@ def _test_success_requires_objectives_and_one_owner(simulation_app):
     return True
 
 
+def _test_manager_rejects_missing_progress_objectives(simulation_app):
+    import pytest
+    from isaaclab.managers import TerminationManager, TerminationTermCfg
+
+    from isaaclab_arena.progress_tracking.task_success import ProgressBasedSuccessTerm
+
+    env, _, _ = _make_environment_and_manager(["place"])
+    missing_objectives_cfg = TerminationTermCfg(func=ProgressBasedSuccessTerm, params={})
+    with pytest.raises(ValueError, match="progress_objectives"):
+        TerminationManager({"success": missing_objectives_cfg}, env)
+    return True
+
+
 def _test_builder_installs_success_only_for_progress_objectives(simulation_app):
     from isaaclab.envs.mdp import time_out
     from isaaclab.managers import TerminationTermCfg
@@ -230,19 +244,80 @@ def _test_builder_installs_success_only_for_progress_objectives(simulation_app):
         description = IsaacLabArenaEnvironment(name="progress_success_builder", scene=Scene(), task=task)
         builder = ArenaEnvBuilder(description, ArenaEnvBuilderCfg(num_envs=2, solve_relations=False, device="cpu"))
         env_cfg, _ = builder.compose_manager_cfg()
-        success_term = getattr(env_cfg.terminations, "success", None)
+        success_term = env_cfg.terminations.get("success")
         if isinstance(task, _ProgressTask):
             assert isinstance(success_term, TerminationTermCfg)
             assert success_term.func is ProgressBasedSuccessTerm
             assert len(success_term.params["progress_objectives"]) == 1
-            assert env_cfg.terminations.object_dropped.func is _controlled_predicate
+            assert env_cfg.terminations["object_dropped"].func is _controlled_predicate
             # The task configuration is authoritative, not the constructor's default episode length.
             assert env_cfg.episode_length_s == 12.0
         else:
             assert success_term is None
             assert env_cfg.episode_length_s == task.episode_length_s
-        assert env_cfg.terminations.time_out.func is time_out
-        assert env_cfg.terminations.time_out.time_out
+        assert env_cfg.terminations["time_out"].func is time_out
+        assert env_cfg.terminations["time_out"].time_out
+    return True
+
+
+def _test_builder_merges_termination_terms_with_task_precedence(simulation_app):
+    from unittest.mock import patch
+
+    from isaaclab.envs.mdp import time_out
+    from isaaclab.managers import TerminationTermCfg
+    from isaaclab.utils import configclass
+
+    from isaaclab_arena.embodiments.no_embodiment import NoEmbodiment
+    from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
+    from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
+    from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
+    from isaaclab_arena.scene.scene import Scene
+    from isaaclab_arena.tasks.no_task import NoTask
+    from isaaclab_arena.tasks.task_termination_cfg import TaskTerminationCfg
+
+    @configclass
+    class _SceneTerminationsCfg:
+        scene_only = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "scene_only"})
+        shared_failure = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "scene_shared"})
+        object_dropped = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "scene_dropped"})
+        disabled_failure = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "disabled"})
+        time_out = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "scene_timeout"})
+
+    @configclass
+    class _EmbodimentTerminationsCfg:
+        shared_failure = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "embodiment_shared"})
+        object_dropped = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "embodiment_dropped"})
+        disabled_failure: TerminationTermCfg | None = None
+        time_out = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "embodiment_timeout"})
+
+    task = NoTask()
+    description = IsaacLabArenaEnvironment(
+        name="termination_merge_order", scene=Scene(), task=task, embodiment=NoEmbodiment()
+    )
+    task_termination_cfg = TaskTerminationCfg(
+        failures={
+            "object_dropped": TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "task_dropped"})
+        },
+        timeout_s=12.0,
+    )
+    builder = ArenaEnvBuilder(description, ArenaEnvBuilderCfg(solve_relations=False, device="cpu"))
+    with (
+        patch.object(description.scene, "get_termination_cfg", return_value=_SceneTerminationsCfg()),
+        patch.object(description.embodiment, "get_termination_cfg", return_value=_EmbodimentTerminationsCfg()),
+        patch.object(task, "get_termination_cfg", return_value=task_termination_cfg),
+    ):
+        env_cfg, _ = builder.compose_manager_cfg()
+
+    termination_terms = env_cfg.terminations
+    assert isinstance(termination_terms, dict)
+    assert set(termination_terms) == {"scene_only", "shared_failure", "object_dropped", "disabled_failure", "time_out"}
+    assert termination_terms["scene_only"].params["predicate_name"] == "scene_only"
+    assert termination_terms["shared_failure"].params["predicate_name"] == "embodiment_shared"
+    assert termination_terms["object_dropped"].params["predicate_name"] == "task_dropped"
+    assert termination_terms["disabled_failure"] is None
+    assert termination_terms["time_out"].func is time_out
+    assert termination_terms["time_out"].time_out
+    assert env_cfg.episode_length_s == 12.0
     return True
 
 
@@ -364,14 +439,14 @@ def _test_pick_and_place_uses_typed_success_failure_and_timeout(simulation_app):
         patch.object(task, "get_metrics", return_value=[]),
     ):
         env_cfg, _ = builder.compose_manager_cfg()
-    assert env_cfg.terminations.success.func is ProgressBasedSuccessTerm
-    objectives = env_cfg.terminations.success.params["progress_objectives"]
+    assert env_cfg.terminations["success"].func is ProgressBasedSuccessTerm
+    objectives = env_cfg.terminations["success"].params["progress_objectives"]
     assert len(objectives) == 1
     assert [predicate.func for predicate in objectives[0].sequence] == expected_predicates
-    assert env_cfg.terminations.object_dropped.func is root_height_below_minimum
-    assert env_cfg.terminations.object_dropped.params["minimum_height"] == -0.1
-    assert env_cfg.terminations.time_out.func is time_out
-    assert env_cfg.terminations.time_out.time_out
+    assert env_cfg.terminations["object_dropped"].func is root_height_below_minimum
+    assert env_cfg.terminations["object_dropped"].params["minimum_height"] == -0.1
+    assert env_cfg.terminations["time_out"].func is time_out
+    assert env_cfg.terminations["time_out"].time_out
     assert env_cfg.episode_length_s == 12.0
     assert env_cfg.recorders.progress_tracking.class_type is ProgressTrackingRecorder
     assert getattr(env_cfg.events, "reset_progress_objectives", None) is None
@@ -434,8 +509,16 @@ def test_success_requires_objectives_and_one_owner():
     assert run_function_with_persistent_simulation_app(_test_success_requires_objectives_and_one_owner)
 
 
+def test_manager_rejects_missing_progress_objectives():
+    assert run_function_with_persistent_simulation_app(_test_manager_rejects_missing_progress_objectives)
+
+
 def test_builder_installs_success_only_for_progress_objectives():
     assert run_function_with_persistent_simulation_app(_test_builder_installs_success_only_for_progress_objectives)
+
+
+def test_builder_merges_termination_terms_with_task_precedence():
+    assert run_function_with_persistent_simulation_app(_test_builder_merges_termination_terms_with_task_precedence)
 
 
 def test_builder_rejects_success_owned_by_other_components():

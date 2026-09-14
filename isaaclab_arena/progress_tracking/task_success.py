@@ -26,20 +26,21 @@ class ProgressBasedSuccessTerm(ManagerTermBase):
 
     def __init__(self, cfg: TerminationTermCfg, env):
         super().__init__(cfg, env)
-        progress_objectives = cfg.params["progress_objectives"]
+        # Isaac Lab validates required __call__ parameters before constructing this term.
+        progress_objectives: list[ProgressObjective] = cfg.params["progress_objectives"]
         assert progress_objectives, "Task success requires at least one progress objective."
-        assert getattr(env, "_progress_tracker", None) is None, "Only one root term may own task progress."
-        self._tracker = ProgressTracker(progress_objectives, num_envs=env.num_envs, device=env.device)
+        assert env._progress_tracker is None, "Only one root term may own task progress."
+        self._progress_tracker = ProgressTracker(progress_objectives, num_envs=env.num_envs, device=env.device)
         self._environment_ids = torch.arange(env.num_envs, device=env.device)
-        env._progress_tracker = self._tracker
+        env._progress_tracker = self._progress_tracker
 
     def __call__(self, env, progress_objectives: list[ProgressObjective]) -> torch.Tensor:
         """Advance each active stage once and return task completion per environment."""
-        self._tracker.step(env, step_index=env.episode_length_buf)
-        return self._tracker.is_complete()
+        self._progress_tracker.step(env, step_index=env.episode_length_buf)
+        return self._progress_tracker.is_complete()
 
     def reset(self, env_ids=None) -> None:
         """Clear progress and initial resting positions for the restarting environments."""
         selected_env_ids = self._environment_ids if env_ids is None else self._environment_ids[env_ids]
-        self._tracker.reset(selected_env_ids)
+        self._progress_tracker.reset(selected_env_ids)
         reset_rest_pose_recorder(self._env, selected_env_ids)

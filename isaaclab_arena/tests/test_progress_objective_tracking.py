@@ -42,6 +42,7 @@ class _MockEnv:
         self.num_envs = num_envs
         self.device = device
         self.extras = {}
+        self._progress_tracker = None
         self.episode_length_buf = torch.zeros(num_envs, dtype=torch.long)
         self._object_initial_rest_pose_recorder = ObjectInitialRestPoseRecorder(num_envs, device)
 
@@ -615,7 +616,7 @@ def _test_recorder_publishes_to_extras_and_records_nothing(simulation_app) -> bo
     objectives = [ProgressObjective(name="task", sequence=[first_predicate, final_predicate])]
     recorder_cfg = ProgressTrackingRecorderCfg()
     recorder = recorder_cfg.class_type(recorder_cfg, env)
-    assert not hasattr(env, "_progress_tracker")
+    assert env._progress_tracker is None
     success_cfg = TerminationTermCfg(func=ProgressBasedSuccessTerm, params={"progress_objectives": objectives})
     success = ProgressBasedSuccessTerm(success_cfg, env)
 
