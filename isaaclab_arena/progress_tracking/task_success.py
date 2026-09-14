@@ -16,8 +16,13 @@ from isaaclab_arena.progress_tracking.progress_tracker import ProgressTracker
 from isaaclab_arena.tasks.predicates.object_settling import reset_rest_pose_recorder
 
 
-class TaskSuccessFromProgress(ManagerTermBase):
-    """Advance required task progress and report completion on the same environment step."""
+class ProgressBasedSuccessTerm(ManagerTermBase):
+    """Connect task progress to Isaac Lab's termination and reset lifecycle.
+
+    ArenaEnvBuilder installs this term automatically. It owns the tracker,
+    advances it during termination evaluation, and reports same-step success.
+    Isaac Lab's episode resets are forwarded to the tracker.
+    """
 
     def __init__(self, cfg: TerminationTermCfg, env):
         super().__init__(cfg, env)

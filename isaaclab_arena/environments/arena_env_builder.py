@@ -34,7 +34,7 @@ from isaaclab_arena.metrics.metric_base import MetricBase
 from isaaclab_arena.metrics.metric_term_cfg import MetricTermCfg
 from isaaclab_arena.metrics.recorder_manager_utils import metrics_to_recorder_manager_cfg
 from isaaclab_arena.progress_tracking.progress_tracker import make_progress_tracking_recorder_cfg
-from isaaclab_arena.progress_tracking.task_success import TaskSuccessFromProgress
+from isaaclab_arena.progress_tracking.task_success import ProgressBasedSuccessTerm
 from isaaclab_arena.recording.common_terms import CoreEpisodeRecorderTermCfg, VariationEpisodeRecorderTermCfg
 from isaaclab_arena.recording.episode_recorder_manager import EpisodeRecorderTermCfg
 from isaaclab_arena.recording.progress_terms import ProgressEpisodeRecorderTermCfg
@@ -216,7 +216,7 @@ class ArenaEnvBuilder:
         )
         if task_termination_cfg.success:
             success = TerminationTermCfg(
-                func=TaskSuccessFromProgress,
+                func=ProgressBasedSuccessTerm,
                 params={"progress_objectives": task_termination_cfg.success},
             )
             task_termination_fields.append(("success", TerminationTermCfg, success))
