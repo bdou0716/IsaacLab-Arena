@@ -378,6 +378,42 @@ def _test_pick_and_place_uses_typed_success_failure_and_timeout(simulation_app):
     return True
 
 
+def _test_open_door_uses_existing_sequence_and_thresholds(simulation_app):
+    from unittest.mock import Mock
+
+    from isaaclab_arena.affordances.openable import Openable
+    from isaaclab_arena.tasks.open_door_task import OpenDoorTask
+    from isaaclab_arena.tasks.predicates.articulations import is_away_from_rest_openness
+    from isaaclab_arena.tasks.task_termination_cfg import TaskTerminationCfg
+
+    door = Mock(spec=Openable)
+    door.name = "door"
+    door.openable_joint_name = "hinge"
+    for openness_threshold, reset_openness in [(None, 0.0), (0.7, 0.2), (None, None)]:
+        task = OpenDoorTask(
+            door,
+            openness_threshold=openness_threshold,
+            reset_openness=reset_openness,
+            episode_length_s=12.0,
+        )
+        termination_cfg = task.get_termination_cfg()
+        assert isinstance(termination_cfg, TaskTerminationCfg)
+        assert termination_cfg.timeout_s == 12.0
+        assert termination_cfg.failures == {}
+        assert len(termination_cfg.success) == 1
+        objective = termination_cfg.success[0]
+        assert objective.name == "open_door"
+        moved_from_rest, opened = objective.sequence
+        assert moved_from_rest.func is is_away_from_rest_openness
+        assert moved_from_rest.keywords["asset_cfg"].name == "door"
+        assert moved_from_rest.keywords["asset_cfg"].joint_names == ["hinge"]
+        assert moved_from_rest.keywords["rest_openness"] == (0.0 if reset_openness is None else reset_openness)
+        assert moved_from_rest.keywords["min_openness_change"] == task.min_openness_change
+        assert opened.func is door.is_open
+        assert opened.keywords == ({} if openness_threshold is None else {"threshold": openness_threshold})
+    return True
+
+
 def test_success_advances_once_and_reporting_is_passive():
     assert run_function_with_persistent_simulation_app(_test_success_advances_once_and_reporting_is_passive)
 
@@ -416,3 +452,7 @@ def test_builder_rejects_task_without_unified_termination_config():
 
 def test_pick_and_place_uses_typed_success_failure_and_timeout():
     assert run_function_with_persistent_simulation_app(_test_pick_and_place_uses_typed_success_failure_and_timeout)
+
+
+def test_open_door_uses_existing_sequence_and_thresholds():
+    assert run_function_with_persistent_simulation_app(_test_open_door_uses_existing_sequence_and_thresholds)
