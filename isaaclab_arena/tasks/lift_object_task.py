@@ -5,7 +5,6 @@
 
 import numpy as np
 from dataclasses import MISSING
-from functools import partial
 from typing import Any
 
 import isaaclab.envs.mdp as mdp_isaac_lab
@@ -22,11 +21,9 @@ from isaaclab_arena.assets.register import register_task
 from isaaclab_arena.embodiments.embodiment_base import EmbodimentBase
 from isaaclab_arena.metrics.metric_base import MetricBase
 from isaaclab_arena.metrics.success_rate import SuccessRateMetric
-from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
 from isaaclab_arena.tasks.observations import observations
 from isaaclab_arena.tasks.rewards import lift_object_rewards, rewards
 from isaaclab_arena.tasks.task_base import TaskBase
-from isaaclab_arena.tasks.task_termination_cfg import TaskTerminationCfg
 from isaaclab_arena.tasks.terminations import lift_object_il_success, lift_object_rl_success
 from isaaclab_arena.utils.cameras import get_viewer_cfg_look_at_object
 from isaaclab_arena.utils.pose import PoseRange
@@ -61,7 +58,7 @@ class LiftObjectTask(TaskBase):
         if isinstance(initial_pose, PoseRange):
             initial_pose = initial_pose.get_midpoint()
 
-        # IL and teleoperation use a fixed goal.
+        # Store goal pose for success termination (IL/teleoperation uses fixed goal)
         self.goal_position_xyz = (
             initial_pose.position_xyz[0] + goal_position_delta_xyz[0],
             initial_pose.position_xyz[1] + goal_position_delta_xyz[1],
@@ -71,14 +68,24 @@ class LiftObjectTask(TaskBase):
 
         self.scene_config = None
         self.events_cfg = None
+        self.termination_cfg = self.make_il_termination_cfg()
 
     def get_scene_cfg(self):
         return self.scene_config
 
+    def get_termination_cfg(self):
+        return self.termination_cfg
+
     def get_events_cfg(self):
         return self.events_cfg
 
-    def get_termination_cfg(self) -> TaskTerminationCfg:
+    def make_il_termination_cfg(self):
+        """Create termination configuration.
+
+        Args:
+            rl_training: If True, disables success termination (for RL training).
+            use_command_goal: If True, uses goal from command manager (for RL evaluation).
+        """
         object_dropped = TerminationTermCfg(
             func=mdp_isaac_lab.root_height_below_minimum,
             params={
@@ -87,23 +94,17 @@ class LiftObjectTask(TaskBase):
             },
         )
 
-        return TaskTerminationCfg(
-            timeout_s=self.episode_length_s,
-            success=[
-                ProgressObjective(
-                    name="lift_object",
-                    sequence=[
-                        partial(
-                            lift_object_il_success,
-                            object_cfg=SceneEntityCfg(self.lift_object.name),
-                            goal_position=self.goal_position_xyz,
-                            position_tolerance=self.goal_position_tolerance,
-                        )
-                    ],
-                ),
-            ],
-            failures={"object_dropped": object_dropped},
+        # Use dynamic success termination
+        success = TerminationTermCfg(
+            func=lift_object_il_success,
+            params={
+                "object_cfg": SceneEntityCfg(self.lift_object.name),
+                "goal_position": self.goal_position_xyz,
+                "position_tolerance": self.goal_position_tolerance,
+            },
         )
+
+        return LiftObjectTerminationsCfg(object_dropped=object_dropped, success=success)
 
     def get_mimic_env_cfg(self, embodiment_name: str):
         raise NotImplementedError("Function not implemented yet.")
@@ -116,6 +117,19 @@ class LiftObjectTask(TaskBase):
             lookat_object=self.lift_object,
             offset=np.array([-1.5, -1.5, 1.5]),
         )
+
+
+@configclass
+class LiftObjectTerminationsCfg:
+    """Termination terms for the Lift Object task.
+
+    Note: success is optional and can be None for RL tasks where early
+    termination on success is not desired.
+    """
+
+    time_out: TerminationTermCfg = TerminationTermCfg(func=mdp_isaac_lab.time_out, time_out=True)
+    object_dropped: TerminationTermCfg = MISSING
+    success: TerminationTermCfg = MISSING
 
 
 @register_task
@@ -167,13 +181,13 @@ class LiftObjectTaskRL(LiftObjectTask):
             initial_pose.position_xyz[2] + target_z_delta[1],
         )
 
-        # The RL objective uses the command goal instead of the parent's fixed goal.
+        # Call parent with dummy delta (will be overridden by termination config anyway)
         super().__init__(
             lift_object=lift_object,
             background_scene=background_scene,
             episode_length_s=episode_length_s,
-            goal_position_delta_xyz=(0, 0, 0),
-            goal_position_tolerance=0.05,
+            goal_position_delta_xyz=(0, 0, 0),  # Dummy, termination will be overridden
+            goal_position_tolerance=0.05,  # Dummy, termination will be overridden
         )
 
         self.embodiment = embodiment
@@ -195,24 +209,32 @@ class LiftObjectTaskRL(LiftObjectTask):
             ee_frame_name=self.embodiment.get_ee_frame_name(self.embodiment.get_arm_mode()),
         )
 
-    def get_termination_cfg(self) -> TaskTerminationCfg:
-        termination_cfg = super().get_termination_cfg()
-        termination_cfg.success = [
-            ProgressObjective(
-                name="lift_object",
-                sequence=[
-                    partial(
-                        lift_object_rl_success,
-                        object_cfg=SceneEntityCfg(self.lift_object.name),
-                        robot_cfg=SceneEntityCfg(self.embodiment.get_scene_key()),
-                        rl_training=self.rl_training_mode,
-                        command_name="object_pose",
-                        position_tolerance=self.goal_position_tolerance,
-                    )
-                ],
-            )
-        ]
-        return termination_cfg
+        # Override termination config with RL training mode
+        self.termination_cfg = self.make_rl_termination_cfg()
+
+    def make_rl_termination_cfg(self):
+        """Create termination configuration for RL training mode."""
+        object_dropped = TerminationTermCfg(
+            func=mdp_isaac_lab.root_height_below_minimum,
+            params={
+                "minimum_height": self.background_scene.object_min_z,
+                "asset_cfg": SceneEntityCfg(self.lift_object.name),
+            },
+        )
+
+        # Use dynamic success termination
+        success = TerminationTermCfg(
+            func=lift_object_rl_success,
+            params={
+                "object_cfg": SceneEntityCfg(self.lift_object.name),
+                "robot_cfg": SceneEntityCfg(self.embodiment.get_scene_key()),
+                "rl_training": self.rl_training_mode,
+                "command_name": "object_pose",
+                "position_tolerance": self.goal_position_tolerance,
+            },
+        )
+
+        return LiftObjectTerminationsCfg(object_dropped=object_dropped, success=success)
 
     def get_observation_cfg(self):
         return self.observation_cfg
@@ -222,6 +244,9 @@ class LiftObjectTaskRL(LiftObjectTask):
 
     def get_commands_cfg(self):
         return self.commands_cfg
+
+    def get_termination_cfg(self):
+        return self.termination_cfg
 
 
 @configclass
@@ -338,6 +363,23 @@ class LiftObjectRewardCfg:
 # ---------------------------------------------------------------------------
 
 
+@configclass
+class DexsuiteLiftTerminationsCfg(lift.TerminationsCfg):
+    """Dexsuite base terminations + position-based ``success``.
+
+    Inherits ``time_out``, ``object_out_of_bound``, and ``abnormal_robot`` from
+    :class:`isaaclab_tasks.core.lift.lift_env_cfg.TerminationsCfg`.
+    """
+
+    success: TerminationTermCfg = TerminationTermCfg(
+        func=lift_object_rl_success,
+        params={
+            "command_name": "object_pose",
+            "position_tolerance": 0.05,
+        },
+    )
+
+
 @register_task
 class DexsuiteLiftTask(LiftObjectTask):
     """Dexsuite lift task for Arena evaluation.
@@ -358,28 +400,7 @@ class DexsuiteLiftTask(LiftObjectTask):
         self.commands_cfg = lift.CommandsCfg()
         self.commands_cfg.object_pose.position_only = True
         self.commands_cfg.object_pose.resampling_time_range = (2.0, 3.0)
-
-    def get_termination_cfg(self) -> TaskTerminationCfg:
-        native_termination_cfg = lift.TerminationsCfg()
-        return TaskTerminationCfg(
-            timeout_s=self.episode_length_s,
-            success=[
-                ProgressObjective(
-                    name="lift_object",
-                    sequence=[
-                        partial(
-                            lift_object_rl_success,
-                            command_name="object_pose",
-                            position_tolerance=self.goal_position_tolerance,
-                        )
-                    ],
-                ),
-            ],
-            failures={
-                "object_out_of_bound": native_termination_cfg.object_out_of_bound,
-                "abnormal_robot": native_termination_cfg.abnormal_robot,
-            },
-        )
+        self.termination_cfg = DexsuiteLiftTerminationsCfg()
 
     def get_commands_cfg(self) -> Any:
         return self.commands_cfg
