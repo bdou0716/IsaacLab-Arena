@@ -187,6 +187,44 @@ class ArenaEnvBuilder:
         fields = [(m.name, MetricTermCfg, m.get_metric_term_cfg()) for m in metrics]
         return make_configclass("MetricsCfg", fields)()
 
+    def _compose_termination_cfg(
+        self,
+        task_termination_cfg: TaskTerminationCfg,
+        scene_termination_cfg: object | None,
+        embodiment_termination_cfg: object | None,
+    ) -> object:
+        """Translate task criteria and combine them with scene and embodiment terminations.
+
+        Args:
+            task_termination_cfg: Task-owned success objectives, failures, and timeout.
+            scene_termination_cfg: Additional scene termination terms, excluding success.
+            embodiment_termination_cfg: Additional embodiment termination terms, excluding success.
+
+        Returns:
+            The combined Isaac Lab termination configuration.
+        """
+        component_termination_configs = [scene_termination_cfg, embodiment_termination_cfg]
+        for component_termination_cfg in component_termination_configs:
+            assert (
+                getattr(component_termination_cfg, "success", None) is None
+            ), "Define success objectives in the task's TaskTerminationCfg; the builder owns the success term."
+        task_termination_fields = [
+            (name, TerminationTermCfg, failure) for name, failure in task_termination_cfg.failures.items()
+        ]
+        task_termination_fields.append(
+            ("time_out", TerminationTermCfg, TerminationTermCfg(func=time_out, time_out=True))
+        )
+        if task_termination_cfg.success:
+            success = TerminationTermCfg(
+                func=TaskSuccessFromProgress,
+                params={"progress_objectives": task_termination_cfg.success},
+            )
+            task_termination_fields.append(("success", TerminationTermCfg, success))
+        task_manager_termination_cfg = make_configclass("TaskTerminationTermsCfg", task_termination_fields)()
+        return combine_configclass_instances(
+            "TerminationCfg", *component_termination_configs, task_manager_termination_cfg
+        )
+
     def _compose_episode_recorders_cfg(self, extra_terms: dict[str, EpisodeRecorderTermCfg] | None = None) -> object:
         """Build a configclass container with one EpisodeRecorderTermCfg field per episode recorder term.
 
@@ -260,7 +298,6 @@ class ArenaEnvBuilder:
         assert isinstance(
             task_termination_cfg, TaskTerminationCfg
         ), "Tasks must return TaskTerminationCfg with success objectives, failures, and timeout_s."
-        progress_objectives = task_termination_cfg.success
         background_physics_events_cfg = None
         background_physics_paths = self.arena_env.scene.get_background_physics_paths()
         if background_physics_paths:
@@ -289,29 +326,10 @@ class ArenaEnvBuilder:
             placement_event_cfg,
             variations_event_cfg,
         )
-        component_termination_configs = [
+        termination_cfg = self._compose_termination_cfg(
+            task_termination_cfg,
             self.arena_env.scene.get_termination_cfg(),
             embodiment.get_termination_cfg(),
-        ]
-        for component_termination_cfg in component_termination_configs:
-            assert (
-                getattr(component_termination_cfg, "success", None) is None
-            ), "Define success objectives in the task's TaskTerminationCfg; the builder owns the success term."
-        task_termination_fields = [
-            (name, TerminationTermCfg, failure) for name, failure in task_termination_cfg.failures.items()
-        ]
-        task_termination_fields.append(
-            ("time_out", TerminationTermCfg, TerminationTermCfg(func=time_out, time_out=True))
-        )
-        if progress_objectives:
-            success = TerminationTermCfg(
-                func=TaskSuccessFromProgress,
-                params={"progress_objectives": progress_objectives},
-            )
-            task_termination_fields.append(("success", TerminationTermCfg, success))
-        task_manager_termination_cfg = make_configclass("TaskTerminationTermsCfg", task_termination_fields)()
-        termination_cfg = combine_configclass_instances(
-            "TerminationCfg", *component_termination_configs, task_manager_termination_cfg
         )
         actions_cfg = embodiment.get_action_cfg()
         xr_cfg = embodiment.get_xr_cfg()
@@ -327,7 +345,9 @@ class ArenaEnvBuilder:
         metrics = task.get_metrics()
         metrics_cfg = self._compose_metrics_cfg(metrics)
         metrics_recorder_manager_cfg = metrics_to_recorder_manager_cfg(metrics)
-        progress_tracking_recorder_cfg: Any = make_progress_tracking_recorder_cfg() if progress_objectives else None
+        progress_tracking_recorder_cfg: Any = (
+            make_progress_tracking_recorder_cfg() if task_termination_cfg.success else None
+        )
 
         # Base has to be specified explicitly to avoid type errors and not lose inheritance.
         recorder_manager_cfg = combine_configclass_instances(
