@@ -35,7 +35,7 @@ from isaaclab_arena.metrics.metric_base import MetricBase
 from isaaclab_arena.metrics.metric_term_cfg import MetricTermCfg
 from isaaclab_arena.metrics.recorder_manager_utils import metrics_to_recorder_manager_cfg
 from isaaclab_arena.progress_tracking.progress_tracker import make_progress_tracking_recorder_cfg
-from isaaclab_arena.progress_tracking.task_success import ProgressBasedSuccessTerm
+from isaaclab_arena.progress_tracking.task_success import TaskSuccessTerm
 from isaaclab_arena.recording.common_terms import CoreEpisodeRecorderTermCfg, VariationEpisodeRecorderTermCfg
 from isaaclab_arena.recording.episode_recorder_manager import EpisodeRecorderTermCfg
 from isaaclab_arena.recording.progress_terms import ProgressEpisodeRecorderTermCfg
@@ -220,11 +220,11 @@ class ArenaEnvBuilder:
         termination_terms["time_out"] = TerminationTermCfg(func=time_out, time_out=True)
         success_objectives = task_termination_cfg.success
 
-        # An empty objective list disables success termination.
+        # Install the shared success term when the task defines success objectives.
         if success_objectives:
             success_term = TerminationTermCfg(
-                func=ProgressBasedSuccessTerm,
-                params={"progress_objectives": success_objectives},
+                func=TaskSuccessTerm,
+                params={"success_objectives": success_objectives},
             )
             termination_terms["success"] = success_term
         return termination_terms

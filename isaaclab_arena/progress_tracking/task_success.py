@@ -16,26 +16,28 @@ from isaaclab_arena.progress_tracking.progress_tracker import ProgressTracker
 from isaaclab_arena.tasks.predicates.object_settling import reset_rest_pose_recorder
 
 
-class ProgressBasedSuccessTerm(ManagerTermBase):
-    """Connect task progress to Isaac Lab's termination and reset lifecycle.
+class TaskSuccessTerm(ManagerTermBase):
+    """Determine task success using ProgressTracker.
 
-    ArenaEnvBuilder installs this term automatically. It owns the tracker,
-    advances it during termination evaluation, and reports same-step success.
-    Isaac Lab's episode resets are forwarded to the tracker.
+    ArenaEnvBuilder registers this term with Isaac Lab's TerminationManager.
+    TaskSuccessTerm creates and owns ProgressTracker. TerminationManager
+    calls this term to update progress and check whether all success
+    objectives are complete. On episode resets, TerminationManager calls
+    this term's reset() to clear progress for the restarting environments.
     """
 
     def __init__(self, cfg: TerminationTermCfg, env):
         super().__init__(cfg, env)
         # Isaac Lab validates required __call__ parameters before constructing this term.
-        progress_objectives: list[ProgressObjective] = cfg.params["progress_objectives"]
-        assert progress_objectives, "Task success requires at least one progress objective."
+        success_objectives: list[ProgressObjective] = cfg.params["success_objectives"]
+        assert success_objectives, "Task success requires at least one success objective."
         assert env._progress_tracker is None, "Only one root term may own task progress."
-        self._progress_tracker = ProgressTracker(progress_objectives, num_envs=env.num_envs, device=env.device)
+        self._progress_tracker = ProgressTracker(success_objectives, num_envs=env.num_envs, device=env.device)
         self._environment_ids = torch.arange(env.num_envs, device=env.device)
         env._progress_tracker = self._progress_tracker
 
-    def __call__(self, env, progress_objectives: list[ProgressObjective]) -> torch.Tensor:
-        """Advance each active stage once and return task completion per environment."""
+    def __call__(self, env, success_objectives: list[ProgressObjective]) -> torch.Tensor:
+        """Update ProgressTracker and return whether all success objectives are complete in each environment."""
         self._progress_tracker.step(env, step_index=env.episode_length_buf)
         return self._progress_tracker.is_complete()
 

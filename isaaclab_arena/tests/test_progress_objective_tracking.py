@@ -606,7 +606,7 @@ def _test_recorder_publishes_to_extras_and_records_nothing(simulation_app) -> bo
 
     from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
     from isaaclab_arena.progress_tracking.progress_tracker import ProgressTrackingRecorderCfg
-    from isaaclab_arena.progress_tracking.task_success import ProgressBasedSuccessTerm
+    from isaaclab_arena.progress_tracking.task_success import TaskSuccessTerm
 
     env = _MockEnv(num_envs=2)
     first_predicate = _MockPredicate(num_envs=2, name="first")
@@ -617,8 +617,8 @@ def _test_recorder_publishes_to_extras_and_records_nothing(simulation_app) -> bo
     recorder_cfg = ProgressTrackingRecorderCfg()
     recorder = recorder_cfg.class_type(recorder_cfg, env)
     assert env._progress_tracker is None
-    success_cfg = TerminationTermCfg(func=ProgressBasedSuccessTerm, params={"progress_objectives": objectives})
-    success = ProgressBasedSuccessTerm(success_cfg, env)
+    success_cfg = TerminationTermCfg(func=TaskSuccessTerm, params={"success_objectives": objectives})
+    success = TaskSuccessTerm(success_cfg, env)
 
     assert recorder.record_post_step() == (None, None)
     assert len(env.extras["progress_tracking"]["states"]) == 2

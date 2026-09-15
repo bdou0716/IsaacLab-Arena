@@ -23,7 +23,7 @@ def _make_environment_and_manager(predicate_names):
 
     from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
     from isaaclab_arena.progress_tracking.progress_tracker import ProgressTrackingRecorderCfg
-    from isaaclab_arena.progress_tracking.task_success import ProgressBasedSuccessTerm
+    from isaaclab_arena.progress_tracking.task_success import TaskSuccessTerm
     from isaaclab_arena.tasks.predicates.object_settling import ObjectInitialRestPoseRecorder
 
     env = SimpleNamespace(
@@ -49,7 +49,7 @@ def _make_environment_and_manager(predicate_names):
     recorder = recorder_cfg.class_type(recorder_cfg, env)
     assert env._progress_tracker is None
     manager = TerminationManager(
-        {"success": TerminationTermCfg(func=ProgressBasedSuccessTerm, params={"progress_objectives": objectives})},
+        {"success": TerminationTermCfg(func=TaskSuccessTerm, params={"success_objectives": objectives})},
         env,
     )
     env.termination_manager = manager
@@ -189,31 +189,31 @@ def _test_success_requires_objectives_and_one_owner(simulation_app):
     import pytest
     from isaaclab.managers import TerminationTermCfg
 
-    from isaaclab_arena.progress_tracking.task_success import ProgressBasedSuccessTerm
+    from isaaclab_arena.progress_tracking.task_success import TaskSuccessTerm
 
     env, manager, _ = _make_environment_and_manager(["place"])
-    empty_cfg = TerminationTermCfg(func=ProgressBasedSuccessTerm, params={"progress_objectives": []})
-    with pytest.raises(AssertionError, match="at least one progress objective"):
-        ProgressBasedSuccessTerm(empty_cfg, env)
+    empty_cfg = TerminationTermCfg(func=TaskSuccessTerm, params={"success_objectives": []})
+    with pytest.raises(AssertionError, match="at least one success objective"):
+        TaskSuccessTerm(empty_cfg, env)
     with pytest.raises(AssertionError, match="Only one root term"):
-        ProgressBasedSuccessTerm(manager.get_term_cfg("success"), env)
+        TaskSuccessTerm(manager.get_term_cfg("success"), env)
     return True
 
 
-def _test_manager_rejects_missing_progress_objectives(simulation_app):
+def _test_manager_rejects_missing_success_objectives(simulation_app):
     import pytest
     from isaaclab.managers import TerminationManager, TerminationTermCfg
 
-    from isaaclab_arena.progress_tracking.task_success import ProgressBasedSuccessTerm
+    from isaaclab_arena.progress_tracking.task_success import TaskSuccessTerm
 
     env, _, _ = _make_environment_and_manager(["place"])
-    missing_objectives_cfg = TerminationTermCfg(func=ProgressBasedSuccessTerm, params={})
-    with pytest.raises(ValueError, match="progress_objectives"):
+    missing_objectives_cfg = TerminationTermCfg(func=TaskSuccessTerm, params={})
+    with pytest.raises(ValueError, match="success_objectives"):
         TerminationManager({"success": missing_objectives_cfg}, env)
     return True
 
 
-def _test_builder_installs_success_only_for_progress_objectives(simulation_app):
+def _test_builder_installs_success_only_for_success_objectives(simulation_app):
     from isaaclab.envs.mdp import time_out
     from isaaclab.managers import TerminationTermCfg
 
@@ -221,7 +221,7 @@ def _test_builder_installs_success_only_for_progress_objectives(simulation_app):
     from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
     from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
     from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
-    from isaaclab_arena.progress_tracking.task_success import ProgressBasedSuccessTerm
+    from isaaclab_arena.progress_tracking.task_success import TaskSuccessTerm
     from isaaclab_arena.scene.scene import Scene
     from isaaclab_arena.tasks.no_task import NoTask
     from isaaclab_arena.tasks.task_termination_cfg import TaskTerminationCfg
@@ -247,8 +247,8 @@ def _test_builder_installs_success_only_for_progress_objectives(simulation_app):
         success_term = env_cfg.terminations.get("success")
         if isinstance(task, _ProgressTask):
             assert isinstance(success_term, TerminationTermCfg)
-            assert success_term.func is ProgressBasedSuccessTerm
-            assert len(success_term.params["progress_objectives"]) == 1
+            assert success_term.func is TaskSuccessTerm
+            assert len(success_term.params["success_objectives"]) == 1
             assert env_cfg.terminations["object_dropped"].func is _controlled_predicate
             # The task configuration is authoritative, not the constructor's default episode length.
             assert env_cfg.episode_length_s == 12.0
@@ -405,7 +405,7 @@ def _test_pick_and_place_uses_typed_success_failure_and_timeout(simulation_app):
     from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
     from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
     from isaaclab_arena.progress_tracking.progress_tracker import ProgressTrackingRecorder
-    from isaaclab_arena.progress_tracking.task_success import ProgressBasedSuccessTerm
+    from isaaclab_arena.progress_tracking.task_success import TaskSuccessTerm
     from isaaclab_arena.scene.scene import Scene
     from isaaclab_arena.tasks.pick_and_place_task import PickAndPlaceTask
     from isaaclab_arena.tasks.predicates.object_settling import objects_settled
@@ -439,8 +439,8 @@ def _test_pick_and_place_uses_typed_success_failure_and_timeout(simulation_app):
         patch.object(task, "get_metrics", return_value=[]),
     ):
         env_cfg, _ = builder.compose_manager_cfg()
-    assert env_cfg.terminations["success"].func is ProgressBasedSuccessTerm
-    objectives = env_cfg.terminations["success"].params["progress_objectives"]
+    assert env_cfg.terminations["success"].func is TaskSuccessTerm
+    objectives = env_cfg.terminations["success"].params["success_objectives"]
     assert len(objectives) == 1
     assert [predicate.func for predicate in objectives[0].sequence] == expected_predicates
     assert env_cfg.terminations["object_dropped"].func is root_height_below_minimum
@@ -509,12 +509,12 @@ def test_success_requires_objectives_and_one_owner():
     assert run_function_with_persistent_simulation_app(_test_success_requires_objectives_and_one_owner)
 
 
-def test_manager_rejects_missing_progress_objectives():
-    assert run_function_with_persistent_simulation_app(_test_manager_rejects_missing_progress_objectives)
+def test_manager_rejects_missing_success_objectives():
+    assert run_function_with_persistent_simulation_app(_test_manager_rejects_missing_success_objectives)
 
 
-def test_builder_installs_success_only_for_progress_objectives():
-    assert run_function_with_persistent_simulation_app(_test_builder_installs_success_only_for_progress_objectives)
+def test_builder_installs_success_only_for_success_objectives():
+    assert run_function_with_persistent_simulation_app(_test_builder_installs_success_only_for_success_objectives)
 
 
 def test_builder_merges_termination_terms_with_task_precedence():
