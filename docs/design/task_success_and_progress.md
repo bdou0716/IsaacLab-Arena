@@ -111,7 +111,7 @@ def get_termination_cfg(self) -> TaskTerminationCfg:
         success=[
             ProgressObjective(
                 name="pick_and_place",
-                sequence=[settled, lifted, placed],
+                predicate_sequences=[settled, lifted, placed],
             ),
         ],
         failures={"object_dropped": object_dropped},
@@ -163,9 +163,10 @@ object_dropped = TerminationTermCfg(
 
 - `success`: every listed `ProgressObjective` must complete for the task to succeed.
   An empty list disables success termination and does not create a `ProgressTracker`.
-- `sequence`: predicates must be satisfied in order. Each sequence advances by at most one
-  predicate per environment on each `ProgressTracker.step()` call, which `TaskSuccessTerm` makes
-  once during a normal environment step. Predicates return one Boolean result per environment.
+- `predicate_sequences`: a list defines one ordered sequence; a dictionary defines named
+  independent sequences. Each sequence advances by at most one predicate per environment on each
+  `ProgressTracker.step()` call, which `TaskSuccessTerm` makes once during a normal environment
+  step. Predicates return one Boolean result per environment.
 - `failures`: any configured failure can end the episode, even if success objectives are incomplete.
 - `timeout_s`: a finite, positive episode time limit. `ArenaEnvBuilder` uses it to set Isaac Lab's
   episode length and installs the timeout term.
@@ -174,13 +175,13 @@ Sequence completion records history. Once the lift predicate has been satisfied,
 to stay true during placement. Completed predicates are not continuously rechecked, and there is
 no requirement yet that a predicate remain true for several steps.
 
-For independent sequences, `ProgressObjective` still accepts
-`predicate_groups={"group_name": [...]}` instead of `sequence`. Its `logical` setting determines
-whether all groups, any group, or a chosen number of groups must finish. These are alternative
-ways to define one objective; supply exactly one of `sequence` or `predicate_groups`.
+For independent sequences, use `predicate_sequences={"cube": [...], "can": [...]}`.
+The `logical` setting determines whether all sequences, any sequence, or a chosen number of
+sequences must finish. A single list is treated as one sequence under the same rules.
 Every objective listed in `TaskTerminationCfg.success` remains required.
-Named groups track their own sequence positions, but observe the same environment. Scores affect
+Named sequences track their own predicate positions, but observe the same environment. Scores affect
 progress reporting only; success uses completion flags, not a score threshold.
+Progress reports continue to use the existing group identifiers and fields; their format is unchanged.
 
 Success is not the only reason an episode can end. Failure and timeout remain separate
 `TerminationManager` terms. This change does not introduce a priority rule for cases where success
@@ -221,8 +222,10 @@ calls it during termination evaluation, and calls its `reset()` during environme
 `TaskSuccessTerm` creates and owns one `ProgressTracker` for the vectorized environment.
 
 Failure predicates remain directly in `TerminationManager`; they do not become ordered success
-predicates. Scene and embodiment termination conditions are still included, but neither component
-may supply its own success term. The task supplies the success objectives.
+predicates. All termination criteria come from the task's `TaskTerminationCfg`. `Scene` and
+`EmbodimentBase` no longer supply separate termination configurations, so the builder does not
+need merging or precedence rules. A task can still define scene- or robot-related failures in
+`TaskTerminationCfg.failures`.
 
 
 ### Resetting the state machine is preserved
@@ -257,13 +260,19 @@ Task authors need to:
 
 1. Return `TaskTerminationCfg` from `get_termination_cfg()`.
 2. Move required objectives from `get_progress_objectives()` into `TaskTerminationCfg.success`.
-   A task with only a single success predicate can use a one-predicate `sequence`.
-3. Replace the old flat `predicate_groups=[...]` form with `sequence=[...]`. Named independent
-   groups keep the dictionary form, with a nonempty list for each group. Wrap single predicates
-   in a list: `predicate_groups=predicate` becomes `sequence=[predicate]`, and
-   `predicate_groups={"group": predicate}` becomes `predicate_groups={"group": [predicate]}`.
+   A task with only a single success predicate can use `predicate_sequences=[predicate]`.
+3. Rename `predicate_groups` to `predicate_sequences`. Both a single list and a dictionary of
+   named lists are supported. The earlier draft's `sequence` argument also becomes
+   `predicate_sequences`; there is now only one argument. Wrap bare predicates in lists:
+   `predicate_groups=predicate` becomes `predicate_sequences=[predicate]`, and
+   `predicate_groups={"group": predicate}` becomes `predicate_sequences={"group": [predicate]}`.
+   The `PredicateGroups` type alias is renamed to `PredicateSequences` for named sequences;
+   the argument accepts `PredicateSequence | PredicateSequences`.
 4. Put failure terms in `failures` and the episode time limit in `timeout_s`. Remove the task's
    old success/timeout configuration and any cached `TerminationsCfg` that it no longer needs.
+5. Move any scene- or embodiment-defined failure terms into `TaskTerminationCfg.failures`.
+   `Scene.get_termination_cfg()`, `EmbodimentBase.get_termination_cfg()`, and their
+   `termination_cfg` fields are removed.
 
 `TaskBase.get_progress_objectives()` is removed. `get_episode_length_s()` still exists, but
 `ArenaEnvBuilder` now takes the episode time limit from `TaskTerminationCfg.timeout_s`.
@@ -271,9 +280,8 @@ An empty `success` list is supported for environments such as `NoTask`; it does 
 independent progress-only tracking.
 
 
-`ArenaEnvBuilder` combines named termination terms with task terms taking precedence over
-embodiment terms, and embodiment terms over scene terms. The builder owns the `success` and
-`time_out` names.
+The builder owns the `success` and `time_out` names; neither can be a key in
+`TaskTerminationCfg.failures`.
 
 
 ## Code references

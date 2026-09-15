@@ -72,7 +72,6 @@ class EmbodimentBase(PlaceableAsset):
         self.command_config: Any | None = None
         self.mimic_env: Any | None = None
         self.xr: Any | None = None
-        self.termination_cfg: Any | None = None
 
     def get_placement_geometry_source(self) -> ArticulationGeometrySpec:
         """Return the USD articulation state used to compute embodiment geometry."""
@@ -250,9 +249,6 @@ class EmbodimentBase(PlaceableAsset):
 
     def get_recorder_term_cfg(self) -> RecorderManagerBaseCfg:
         return None
-
-    def get_termination_cfg(self) -> Any:
-        return self.termination_cfg
 
     def get_scene_key(self) -> str:
         """Return the embodiment's Isaac Lab scene key."""

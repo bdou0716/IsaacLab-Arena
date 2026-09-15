@@ -41,7 +41,7 @@ def _make_environment_and_manager(predicate_names):
     objectives = [
         ProgressObjective(
             name="pick_and_place",
-            sequence=[partial(_controlled_predicate, predicate_name=name) for name in predicate_names],
+            predicate_sequences=[partial(_controlled_predicate, predicate_name=name) for name in predicate_names],
         )
     ]
     # Isaac Lab constructs recorders before the termination manager that owns progress.
@@ -217,6 +217,7 @@ def _test_builder_installs_success_only_for_success_objectives(simulation_app):
     from isaaclab.envs.mdp import time_out
     from isaaclab.managers import TerminationTermCfg
 
+    from isaaclab_arena.embodiments.no_embodiment import NoEmbodiment
     from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
     from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
     from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
@@ -226,124 +227,47 @@ def _test_builder_installs_success_only_for_success_objectives(simulation_app):
     from isaaclab_arena.tasks.no_task import NoTask
     from isaaclab_arena.tasks.task_termination_cfg import TaskTerminationCfg
 
+    progress_task_termination_cfg = TaskTerminationCfg(
+        success=[
+            ProgressObjective(name="done", predicate_sequences=[partial(_controlled_predicate, predicate_name="done")])
+        ],
+        failures={
+            "object_dropped": TerminationTermCfg(
+                func=_controlled_predicate, params={"predicate_name": "object_dropped"}
+            )
+        },
+        timeout_s=12.0,
+    )
+
     class _ProgressTask(NoTask):
         def get_termination_cfg(self):
-            return TaskTerminationCfg(
-                success=[
-                    ProgressObjective(name="done", sequence=[partial(_controlled_predicate, predicate_name="done")])
-                ],
-                failures={
-                    "object_dropped": TerminationTermCfg(
-                        func=_controlled_predicate, params={"predicate_name": "object_dropped"}
-                    )
-                },
-                timeout_s=12.0,
-            )
+            return progress_task_termination_cfg
 
     for task in [NoTask(), _ProgressTask()]:
-        description = IsaacLabArenaEnvironment(name="progress_success_builder", scene=Scene(), task=task)
+        description = IsaacLabArenaEnvironment(
+            name="progress_success_builder", scene=Scene(), task=task, embodiment=NoEmbodiment()
+        )
         builder = ArenaEnvBuilder(description, ArenaEnvBuilderCfg(num_envs=2, solve_relations=False, device="cpu"))
         env_cfg, _ = builder.compose_manager_cfg()
+        assert isinstance(env_cfg.terminations, dict)
         success_term = env_cfg.terminations.get("success")
         if isinstance(task, _ProgressTask):
+            assert set(env_cfg.terminations) == {"success", "object_dropped", "time_out"}
             assert isinstance(success_term, TerminationTermCfg)
             assert success_term.func is TaskSuccessTerm
             assert len(success_term.params["success_objectives"]) == 1
+            assert success_term.params["success_objectives"][0].name == "done"
             assert env_cfg.terminations["object_dropped"].func is _controlled_predicate
+            assert env_cfg.terminations["object_dropped"].params == {"predicate_name": "object_dropped"}
+            assert set(progress_task_termination_cfg.failures) == {"object_dropped"}
             # The task configuration is authoritative, not the constructor's default episode length.
             assert env_cfg.episode_length_s == 12.0
         else:
+            assert set(env_cfg.terminations) == {"time_out"}
             assert success_term is None
             assert env_cfg.episode_length_s == task.episode_length_s
         assert env_cfg.terminations["time_out"].func is time_out
         assert env_cfg.terminations["time_out"].time_out
-    return True
-
-
-def _test_builder_merges_termination_terms_with_task_precedence(simulation_app):
-    from unittest.mock import patch
-
-    from isaaclab.envs.mdp import time_out
-    from isaaclab.managers import TerminationTermCfg
-    from isaaclab.utils import configclass
-
-    from isaaclab_arena.embodiments.no_embodiment import NoEmbodiment
-    from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
-    from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
-    from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
-    from isaaclab_arena.scene.scene import Scene
-    from isaaclab_arena.tasks.no_task import NoTask
-    from isaaclab_arena.tasks.task_termination_cfg import TaskTerminationCfg
-
-    @configclass
-    class _SceneTerminationsCfg:
-        scene_only = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "scene_only"})
-        shared_failure = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "scene_shared"})
-        object_dropped = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "scene_dropped"})
-        disabled_failure = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "disabled"})
-        time_out = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "scene_timeout"})
-
-    @configclass
-    class _EmbodimentTerminationsCfg:
-        shared_failure = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "embodiment_shared"})
-        object_dropped = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "embodiment_dropped"})
-        disabled_failure: TerminationTermCfg | None = None
-        time_out = TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "embodiment_timeout"})
-
-    task = NoTask()
-    description = IsaacLabArenaEnvironment(
-        name="termination_merge_order", scene=Scene(), task=task, embodiment=NoEmbodiment()
-    )
-    task_termination_cfg = TaskTerminationCfg(
-        failures={
-            "object_dropped": TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "task_dropped"})
-        },
-        timeout_s=12.0,
-    )
-    builder = ArenaEnvBuilder(description, ArenaEnvBuilderCfg(solve_relations=False, device="cpu"))
-    with (
-        patch.object(description.scene, "get_termination_cfg", return_value=_SceneTerminationsCfg()),
-        patch.object(description.embodiment, "get_termination_cfg", return_value=_EmbodimentTerminationsCfg()),
-        patch.object(task, "get_termination_cfg", return_value=task_termination_cfg),
-    ):
-        env_cfg, _ = builder.compose_manager_cfg()
-
-    termination_terms = env_cfg.terminations
-    assert isinstance(termination_terms, dict)
-    assert set(termination_terms) == {"scene_only", "shared_failure", "object_dropped", "disabled_failure", "time_out"}
-    assert termination_terms["scene_only"].params["predicate_name"] == "scene_only"
-    assert termination_terms["shared_failure"].params["predicate_name"] == "embodiment_shared"
-    assert termination_terms["object_dropped"].params["predicate_name"] == "task_dropped"
-    assert termination_terms["disabled_failure"] is None
-    assert termination_terms["time_out"].func is time_out
-    assert termination_terms["time_out"].time_out
-    assert env_cfg.episode_length_s == 12.0
-    return True
-
-
-def _test_builder_rejects_success_owned_by_other_components(simulation_app):
-    from unittest.mock import patch
-
-    import pytest
-    from isaaclab.managers import TerminationTermCfg
-
-    from isaaclab_arena.embodiments.no_embodiment import NoEmbodiment
-    from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
-    from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
-    from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
-    from isaaclab_arena.scene.scene import Scene
-    from isaaclab_arena.tasks.no_task import NoTask
-
-    for component_name in ["scene", "embodiment"]:
-        description = IsaacLabArenaEnvironment(
-            name="duplicate_success_builder", scene=Scene(), task=NoTask(), embodiment=NoEmbodiment()
-        )
-        component = getattr(description, component_name)
-        legacy_termination_cfg = SimpleNamespace(success=TerminationTermCfg(func=_controlled_predicate))
-        builder = ArenaEnvBuilder(description, ArenaEnvBuilderCfg(solve_relations=False, device="cpu"))
-        with patch.object(component, "get_termination_cfg", return_value=legacy_termination_cfg):
-            with pytest.raises(AssertionError, match="success"):
-                builder.compose_manager_cfg()
     return True
 
 
@@ -427,7 +351,7 @@ def _test_pick_and_place_uses_typed_success_failure_and_timeout(simulation_app):
     assert termination_cfg.timeout_s == 12.0
     assert len(termination_cfg.success) == 1
     expected_predicates = [objects_settled, object_is_above_height, object_on_destination]
-    assert [predicate.func for predicate in termination_cfg.success[0].sequence] == expected_predicates
+    assert [predicate.func for predicate in termination_cfg.success[0].predicate_sequences] == expected_predicates
     assert set(termination_cfg.failures) == {"object_dropped"}
     assert termination_cfg.failures["object_dropped"].func is root_height_below_minimum
     assert termination_cfg.failures["object_dropped"].params["minimum_height"] == -0.1
@@ -442,7 +366,7 @@ def _test_pick_and_place_uses_typed_success_failure_and_timeout(simulation_app):
     assert env_cfg.terminations["success"].func is TaskSuccessTerm
     objectives = env_cfg.terminations["success"].params["success_objectives"]
     assert len(objectives) == 1
-    assert [predicate.func for predicate in objectives[0].sequence] == expected_predicates
+    assert [predicate.func for predicate in objectives[0].predicate_sequences] == expected_predicates
     assert env_cfg.terminations["object_dropped"].func is root_height_below_minimum
     assert env_cfg.terminations["object_dropped"].params["minimum_height"] == -0.1
     assert env_cfg.terminations["time_out"].func is time_out
@@ -478,7 +402,7 @@ def _test_open_door_uses_existing_sequence_and_thresholds(simulation_app):
         assert len(termination_cfg.success) == 1
         objective = termination_cfg.success[0]
         assert objective.name == "open_door"
-        moved_from_rest, opened = objective.sequence
+        moved_from_rest, opened = objective.predicate_sequences
         assert moved_from_rest.func is is_away_from_rest_openness
         assert moved_from_rest.keywords["asset_cfg"].name == "door"
         assert moved_from_rest.keywords["asset_cfg"].joint_names == ["hinge"]
@@ -515,14 +439,6 @@ def test_manager_rejects_missing_success_objectives():
 
 def test_builder_installs_success_only_for_success_objectives():
     assert run_function_with_persistent_simulation_app(_test_builder_installs_success_only_for_success_objectives)
-
-
-def test_builder_merges_termination_terms_with_task_precedence():
-    assert run_function_with_persistent_simulation_app(_test_builder_merges_termination_terms_with_task_precedence)
-
-
-def test_builder_rejects_success_owned_by_other_components():
-    assert run_function_with_persistent_simulation_app(_test_builder_rejects_success_owned_by_other_components)
 
 
 def test_task_termination_config_validation():

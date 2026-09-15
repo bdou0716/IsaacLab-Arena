@@ -45,4 +45,6 @@ class TaskSuccessTerm(ManagerTermBase):
         """Clear progress and initial resting positions for the restarting environments."""
         selected_env_ids = self._environment_ids if env_ids is None else self._environment_ids[env_ids]
         self._progress_tracker.reset(selected_env_ids)
+        # TODO(cvolk): Consider a shared Arena reset hook in IsaacLabArenaManagerBasedRLEnv.
+        # Revisit this if ObjectInitialRestPoseRecorder is used independently of task success.
         reset_rest_pose_recorder(self._env, selected_env_ids)

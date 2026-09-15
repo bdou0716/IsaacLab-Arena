@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import datetime
 import gymnasium as gym
 from typing import Any
@@ -191,32 +190,16 @@ class ArenaEnvBuilder:
     def _build_termination_manager_cfg(
         self,
         task_termination_cfg: TaskTerminationCfg,
-        scene_termination_cfg: object | None,
-        embodiment_termination_cfg: object | None,
-    ) -> dict[str, TerminationTermCfg | None]:
-        """Translate task criteria and combine them with scene and embodiment terminations.
+    ) -> dict[str, TerminationTermCfg]:
+        """Translate TaskTerminationCfg into Isaac Lab termination terms.
 
         Args:
             task_termination_cfg: Task-owned success objectives, failures, and timeout.
-            scene_termination_cfg: Additional scene termination terms, excluding success.
-            embodiment_termination_cfg: Additional embodiment termination terms, excluding success.
 
         Returns:
-            Named Isaac Lab termination terms; None disables a term. Task terms override
-            embodiment terms, which override scene terms with the same name.
+            Named failure and timeout terms, plus a success term when objectives are defined.
         """
-        termination_terms: dict[str, TerminationTermCfg | None] = {}
-        component_termination_configs = [scene_termination_cfg, embodiment_termination_cfg]
-        for component_termination_cfg in component_termination_configs:
-            if component_termination_cfg is None:
-                continue
-            assert (
-                getattr(component_termination_cfg, "success", None) is None
-            ), "Define success objectives in the task's TaskTerminationCfg; the builder owns the success term."
-            for termination_field in dataclasses.fields(component_termination_cfg):
-                termination_terms[termination_field.name] = getattr(component_termination_cfg, termination_field.name)
-
-        termination_terms.update(task_termination_cfg.failures)
+        termination_terms = dict(task_termination_cfg.failures)
         termination_terms["time_out"] = TerminationTermCfg(func=time_out, time_out=True)
         success_objectives = task_termination_cfg.success
 
@@ -330,11 +313,7 @@ class ArenaEnvBuilder:
             placement_event_cfg,
             variations_event_cfg,
         )
-        termination_cfg = self._build_termination_manager_cfg(
-            task_termination_cfg,
-            self.arena_env.scene.get_termination_cfg(),
-            embodiment.get_termination_cfg(),
-        )
+        termination_cfg = self._build_termination_manager_cfg(task_termination_cfg)
         actions_cfg = embodiment.get_action_cfg()
         xr_cfg = embodiment.get_xr_cfg()
         isaac_teleop_cfg = None

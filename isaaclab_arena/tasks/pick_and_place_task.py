@@ -143,7 +143,9 @@ class PickAndPlaceTask(TaskBase):
             success=[
                 ProgressObjective(
                     name="pick_and_place",
-                    sequence=[
+                    predicate_sequences=[
+                        # TODO(cvolk): Record initial rest poses independently of task success before
+                        # removing objects_settled; object_is_above_height still needs that reference.
                         partial(
                             objects_settled,
                             object_names=[self.pick_up_object.name],

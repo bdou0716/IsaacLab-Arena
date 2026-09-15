@@ -78,7 +78,7 @@ class ProgressState:
 class ProgressObjectiveRunner:
     """ProgressTracker runner for a single ProgressObjective object.
 
-    Each runner is responsible for tracking the progress of all predicate_groups
+    Each runner is responsible for tracking the progress of all predicate sequences
     within a ProgressObjective object across all parallel environments.
     """
 
@@ -137,7 +137,7 @@ class ProgressObjectiveRunner:
             return []
 
         events: list[PredicateEvent] = []
-        for group_name, predicate_chain in self.progress_objective.canonical_predicate_groups.items():
+        for group_name, predicate_chain in self.progress_objective.canonical_predicate_sequences.items():
             events += self._step_group(env, group_name, predicate_chain, gating_mask, step_index)
         return events
 
@@ -262,7 +262,7 @@ class ProgressObjectiveRunner:
         # The active predicate for a group is the one at its current chain position. Any group
         # whose pointer has run off the end of the chain is complete (no active predicate).
         for group_name in objective.group_names:
-            predicate_chain = objective.canonical_predicate_groups[group_name]
+            predicate_chain = objective.canonical_predicate_sequences[group_name]
             cur_predicate_index = int(self.current_predicate_index[group_name][env_idx].item())
             if cur_predicate_index >= len(predicate_chain):
                 active_predicates[group_name] = None
