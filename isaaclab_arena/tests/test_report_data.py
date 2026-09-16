@@ -175,6 +175,73 @@ def test_compatible_subtask_objectives_are_coalesced_into_one_family():
     assert [funnel.name for funnel in job.funnels] == ["pick_and_place"]
 
 
+def test_progress_groups_keep_independent_funnels_and_event_steps():
+    episode = _episode({
+        "progress": {
+            "objectives": {
+                "reach": {
+                    "score": 0.5,
+                    "is_complete": False,
+                    "total_groups": 2,
+                    "active_predicates": {"left": None, "right": "arrive"},
+                }
+            },
+            "events": [
+                {"objective": "reach", "group": "left", "predicate_index": 0, "predicate_name": "found", "step": 3},
+                {"objective": "reach", "group": "right", "predicate_index": 0, "predicate_name": "found", "step": 7},
+                {"objective": "reach", "group": "left", "predicate_index": 1, "predicate_name": "arrive", "step": 9},
+            ],
+        }
+    })
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[episode])
+
+    assert [(funnel.name, funnel.num_instances) for funnel in job.funnels] == [("reach/left", 1), ("reach/right", 1)]
+    assert [[stage.num_reached for stage in funnel.stages] for funnel in job.funnels] == [[1, 1], [1]]
+    signals = job.objectives_for(episode)[0].signals
+    assert [(signal.name, signal.step) for signal in signals] == [
+        ("left/found", 3),
+        ("left/arrive", 9),
+        ("right/found", 7),
+    ]
+
+
+def test_funnel_includes_group_that_has_not_emitted_an_event():
+    first = _episode({
+        "progress": {
+            "objectives": {"reach": {"active_predicates": {"left": None, "right": "arrive"}}},
+            "events": [{"objective": "reach", "group": "left", "predicate_index": 0, "predicate_name": "arrive"}],
+        }
+    })
+    second = _episode(
+        {
+            "progress": {
+                "objectives": {"reach": {"active_predicates": {"left": "arrive", "right": None}}},
+                "events": [{"objective": "reach", "group": "right", "predicate_index": 0, "predicate_name": "arrive"}],
+            }
+        },
+        episode=1,
+    )
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[first, second])
+
+    assert [(funnel.name, funnel.num_instances, funnel.stages[0].num_reached) for funnel in job.funnels] == [
+        ("reach/left", 2, 1),
+        ("reach/right", 2, 1),
+    ]
+
+
+def test_one_named_group_preserves_funnel_and_signal_labels():
+    episode = _episode({
+        "progress": {
+            "objectives": {"reach": {"active_predicates": {"robot": None}}},
+            "events": [{"objective": "reach", "group": "robot", "predicate_index": 0, "predicate_name": "arrive"}],
+        }
+    })
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[episode])
+
+    assert [funnel.name for funnel in job.funnels] == ["reach"]
+    assert [signal.name for signal in job.objectives_for(episode)[0].signals] == ["arrive"]
+
+
 def test_conflicting_subtask_sequences_stay_split_and_report_an_issue():
     episode = _episode({
         "progress": {
@@ -458,3 +525,45 @@ def test_run_status_normalizes_enum_like_values():
         value = "FAILED"
 
     assert normalize_run_status(Status()) == "failed"
+
+
+def test_legacy_single_group_keeps_eventless_episodes_in_the_denominator():
+    complete = _episode({"progress": _progress({"reach": 1}, [("reach", 0, "arrive")], 1.0)})
+    stalled = _episode(
+        {
+            "progress": {
+                "objectives": {"reach": {"active_predicates": {"default": "arrive"}, "total_groups": 1}},
+                "events": [],
+            }
+        },
+        episode=1,
+    )
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[complete, stalled])
+
+    assert [(funnel.name, funnel.num_instances, funnel.stages[0].num_reached) for funnel in job.funnels] == [
+        ("reach", 2, 1)
+    ]
+    assert job.objectives_for(stalled)[0].signals[0].blocked
+
+
+def test_waiting_predicates_keep_groups_when_only_one_has_a_known_sequence():
+    complete = _episode({
+        "progress": {
+            "objectives": {"reach": {"active_predicates": {"left": None, "right": "arrive"}}},
+            "events": [{"objective": "reach", "group": "left", "predicate_index": 0, "predicate_name": "arrive"}],
+        }
+    })
+    stalled = _episode(
+        {
+            "progress": {
+                "objectives": {"reach": {"active_predicates": {"left": "arrive", "right": "arrive"}}},
+                "events": [],
+            }
+        },
+        episode=1,
+    )
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[complete, stalled])
+
+    objective = job.objectives_for(stalled)[0]
+    assert [(signal.name, signal.blocked) for signal in objective.signals] == [("left/arrive", True)]
+    assert objective.blocked_predicates == ["right/arrive"]
