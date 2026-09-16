@@ -128,7 +128,7 @@ def _test_consecutive_predicates(_simulation_app) -> bool:
             "success": TerminationTermCfg(
                 func=TaskSuccessTerm,
                 params={
-                    "success_objectives": [ProgressObjective(name="objects_settled", predicate_sequences=[settled_cfg])]
+                    "success_objectives": [ProgressObjective(name="objects_settled", predicate_sequence=[settled_cfg])]
                 },
             )
         },
@@ -168,7 +168,7 @@ def _test_consecutive_predicates(_simulation_app) -> bool:
         params={"object_names": ["sphere"], "consecutive_steps": 1},
     )
     progress_tracker = ProgressTracker(
-        progress_objectives=[ProgressObjective(name="settled", predicate_sequences=[progress_cfg])],
+        progress_objectives=[ProgressObjective(name="settled", predicate_sequence=[progress_cfg])],
         num_envs=env.num_envs,
         device=env.device,
         env=env,
@@ -194,7 +194,7 @@ def _test_consecutive_predicates(_simulation_app) -> bool:
     )
     delayed_tracker = ProgressTracker(
         progress_objectives=[
-            ProgressObjective(name="delayed_settling", predicate_sequences=[_is_ready, delayed_progress_cfg])
+            ProgressObjective(name="delayed_settling", predicate_sequence=[_is_ready, delayed_progress_cfg])
         ],
         num_envs=env.num_envs,
         device=env.device,

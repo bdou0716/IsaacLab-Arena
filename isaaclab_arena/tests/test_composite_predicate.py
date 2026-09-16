@@ -218,7 +218,7 @@ def _test_composite_predicate_lifecycle(_simulation_app) -> bool:
         params={"predicates": [TerminationTermCfg(func=_first_gate)]},
     )
     nested_tracker = ProgressTracker(
-        progress_objectives=[ProgressObjective(name="nested", predicate_sequences=[nested_group_cfg])],
+        progress_objectives=[ProgressObjective(name="nested", predicate_sequence=[nested_group_cfg])],
         num_envs=env.num_envs,
         device=env.device,
         env=env,
@@ -242,7 +242,7 @@ def _test_composite_predicate_lifecycle(_simulation_app) -> bool:
         progress_objectives=[
             ProgressObjective(
                 name="delayed_nested_settling",
-                predicate_sequences=[
+                predicate_sequence=[
                     _is_ready,
                     TerminationTermCfg(func=CompositePredicate, params={"predicates": [group_cfg]}),
                 ],
@@ -313,7 +313,7 @@ def _test_gear_insertion_success_and_diagnostics(_simulation_app) -> bool:
     success_objectives = task.get_termination_cfg().success
     assert len(success_objectives) == 1
     assert success_objectives[0].name == "gear_insertion"
-    success_cfg = success_objectives[0].predicate_sequences[0]
+    success_cfg = success_objectives[0].predicate_sequence[0]
     assert success_cfg.func is CompositePredicate
     assert success_cfg.params["consecutive_steps"] == 3
     gear_predicates = success_cfg.params["predicates"]

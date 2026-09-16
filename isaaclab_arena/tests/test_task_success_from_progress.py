@@ -41,7 +41,7 @@ def _make_environment_and_manager(predicate_names):
     objectives = [
         ProgressObjective(
             name="pick_and_place",
-            predicate_sequences=[partial(_controlled_predicate, predicate_name=name) for name in predicate_names],
+            predicate_sequence=[partial(_controlled_predicate, predicate_name=name) for name in predicate_names],
         )
     ]
     # Isaac Lab constructs recorders before the termination manager that owns progress.
@@ -215,7 +215,7 @@ def _test_nested_predicates_resolve_scene_references(simulation_app):
         func=CompositePredicate,
         params={"predicates": [body_predicate_cfg], "consecutive_steps": 2},
     )
-    objective = ProgressObjective(name="gear_insertion", predicate_sequences=[composite_cfg])
+    objective = ProgressObjective(name="gear_insertion", predicate_sequence=[composite_cfg])
     tracker = ProgressTracker([objective], num_envs=env.num_envs, device=env.device, env=env)
     tracker.step(env, step_index=None)
     assert tracker.is_complete().tolist() == [False, False]
@@ -277,7 +277,7 @@ def _test_builder_installs_success_only_for_success_objectives(simulation_app):
 
     progress_task_termination_cfg = TaskTerminationCfg(
         success=[
-            ProgressObjective(name="done", predicate_sequences=[partial(_controlled_predicate, predicate_name="done")])
+            ProgressObjective(name="done", predicate_sequence=[partial(_controlled_predicate, predicate_name="done")])
         ],
         failures={
             "object_dropped": TerminationTermCfg(
@@ -399,7 +399,7 @@ def _test_pick_and_place_uses_typed_success_failure_and_timeout(simulation_app):
     assert termination_cfg.timeout_s == 12.0
     assert len(termination_cfg.success) == 1
     expected_predicates = [objects_settled, object_is_above_height, object_on_destination]
-    assert [predicate.func for predicate in termination_cfg.success[0].predicate_sequences] == expected_predicates
+    assert [predicate.func for predicate in termination_cfg.success[0].predicate_sequence] == expected_predicates
     assert set(termination_cfg.failures) == {"object_dropped"}
     assert termination_cfg.failures["object_dropped"].func is root_height_below_minimum
     assert termination_cfg.failures["object_dropped"].params["minimum_height"] == -0.1
@@ -414,7 +414,7 @@ def _test_pick_and_place_uses_typed_success_failure_and_timeout(simulation_app):
     assert env_cfg.terminations["success"].func is TaskSuccessTerm
     objectives = env_cfg.terminations["success"].params["success_objectives"]
     assert len(objectives) == 1
-    assert [predicate.func for predicate in objectives[0].predicate_sequences] == expected_predicates
+    assert [predicate.func for predicate in objectives[0].predicate_sequence] == expected_predicates
     assert env_cfg.terminations["object_dropped"].func is root_height_below_minimum
     assert env_cfg.terminations["object_dropped"].params["minimum_height"] == -0.1
     assert env_cfg.terminations["time_out"].func is time_out
@@ -450,7 +450,7 @@ def _test_open_door_uses_existing_sequence_and_thresholds(simulation_app):
         assert len(termination_cfg.success) == 1
         objective = termination_cfg.success[0]
         assert objective.name == "open_door"
-        moved_from_rest, opened = objective.predicate_sequences
+        moved_from_rest, opened = objective.predicate_sequence
         assert moved_from_rest.func is is_away_from_rest_openness
         assert moved_from_rest.keywords["asset_cfg"].name == "door"
         assert moved_from_rest.keywords["asset_cfg"].joint_names == ["hinge"]

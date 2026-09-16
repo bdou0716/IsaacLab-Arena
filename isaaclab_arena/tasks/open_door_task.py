@@ -63,7 +63,7 @@ class OpenDoorTask(RotateRevoluteJointTask):
             success=[
                 ProgressObjective(
                     name="open_door",
-                    predicate_sequences=[
+                    predicate_sequence=[
                         partial(
                             is_away_from_rest_openness,
                             asset_cfg=SceneEntityCfg(

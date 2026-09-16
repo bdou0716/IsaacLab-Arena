@@ -40,7 +40,7 @@ class ObjectsSettledTask(TaskBase):
             success=[
                 ProgressObjective(
                     name="objects_settled",
-                    predicate_sequences=[success],
+                    predicate_sequence=[success],
                     description="All objects completed the consecutive settling window.",
                 )
             ],

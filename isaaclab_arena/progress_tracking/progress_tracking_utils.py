@@ -36,23 +36,19 @@ def _predicate_repr(pred: Predicate) -> str:
 
 
 def _format_predicate_sequences(
-    predicate_sequences: PredicateSequence | PredicateSequences,
+    predicate_sequences: PredicateSequences,
 ) -> dict[str, list[tuple[Predicate, float]]]:
-    """Convert one sequence or named sequences to weighted, named sequences.
+    """Convert named predicate sequences to weighted sequences.
 
     Args:
-        predicate_sequences: One nonempty list of predicates or a dictionary of named lists.
+        predicate_sequences: A nonempty dictionary of named predicate lists.
             Each list contains predicates or (predicate, score) pairs.
 
     Returns:
-        Named lists of (predicate, score) pairs. A single list uses DEFAULT_GROUP_NAME.
+        Named lists of (predicate, score) pairs.
     """
 
-    if isinstance(predicate_sequences, list):
-        predicate_sequences = {DEFAULT_GROUP_NAME: predicate_sequences}
-    assert isinstance(
-        predicate_sequences, dict
-    ), "ProgressObjective.predicate_sequences must be a list or a dictionary of sequences."
+    assert isinstance(predicate_sequences, dict), "predicate_sequences must map names to predicate sequences."
     assert predicate_sequences, "ProgressObjective.predicate_sequences cannot be empty."
     assert all(
         isinstance(sequence_name, str) for sequence_name in predicate_sequences

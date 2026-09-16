@@ -191,7 +191,7 @@ class GearInsertionTask(TaskBase):
         )
         self.termination_cfg = TaskTerminationCfg(
             timeout_s=self.episode_length_s,
-            success=[ProgressObjective(name="gear_insertion", predicate_sequences=[success])],
+            success=[ProgressObjective(name="gear_insertion", predicate_sequence=[success])],
         )
 
     def get_scene_cfg(self) -> Any:
