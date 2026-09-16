@@ -5,14 +5,62 @@
 
 from __future__ import annotations
 
+import copy
+import functools
 import torch
+from collections.abc import Callable
 from dataclasses import dataclass
 
+from isaaclab.managers import ManagerTermBase, SceneEntityCfg, TerminationTermCfg
 from isaaclab.managers.recorder_manager import RecorderManagerBaseCfg, RecorderTerm, RecorderTermCfg
 from isaaclab.utils.configclass import configclass
 
 from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective, ProgressObjectiveCompletionMode
-from isaaclab_arena.progress_tracking.progress_tracking_utils import _predicate_repr
+from isaaclab_arena.progress_tracking.progress_tracking_utils import DEFAULT_GROUP_NAME, _predicate_repr
+from isaaclab_arena.tasks.predicates.composite import reset_managed_predicates
+from isaaclab_arena.tasks.predicates.consecutive import ConsecutivePredicate
+
+
+def _initialize_predicate_parameters(value, env) -> None:
+    """Resolve scene references and construct nested predicates before their parents."""
+    if isinstance(value, TerminationTermCfg):
+        _initialize_predicate_parameters(value.params, env)
+        if isinstance(value.func, type):
+            assert issubclass(value.func, ManagerTermBase), "Managed predicates must inherit ManagerTermBase."
+            value.func = value.func(value, env)
+        assert callable(value.func), "Predicate configs must specify a callable or ManagerTermBase class."
+    elif isinstance(value, SceneEntityCfg):
+        value.resolve(env.scene)
+    elif isinstance(value, dict):
+        for parameter in value.values():
+            _initialize_predicate_parameters(parameter, env)
+    elif isinstance(value, (list, tuple)):
+        for parameter in value:
+            _initialize_predicate_parameters(parameter, env)
+
+
+def _resolve_progress_predicate(predicate, env):
+    """Instantiate a managed predicate config when the tracker gains access to the environment."""
+
+    # Isaac Lab does not resolve configs inside ProgressObjective dataclasses.
+    # TODO(cvolk): Revisit this adapter when defining the stateful predicate API.
+
+    if not isinstance(predicate, TerminationTermCfg):
+        return predicate
+
+    assert env is not None, "An environment is required to resolve a managed progress predicate."
+    predicate_cfg = copy.deepcopy(predicate)
+    _initialize_predicate_parameters(predicate_cfg, env)
+    return functools.partial(predicate_cfg.func, **predicate_cfg.params)
+
+
+def _evaluate_progress_predicate_with_state_update_mask(predicate, env, state_update_mask: torch.Tensor):
+    """Evaluate a predicate without mutating inactive consecutive-predicate environments."""
+
+    predicate_func = predicate.func if isinstance(predicate, functools.partial) else predicate
+    if isinstance(predicate_func, ConsecutivePredicate):
+        return predicate(env, active_mask=state_update_mask)
+    return predicate(env)
 
 
 @dataclass
@@ -82,7 +130,7 @@ class ProgressObjectiveRunner:
     within a ProgressObjective object across all parallel environments.
     """
 
-    def __init__(self, progress_objective: ProgressObjective, num_envs: int, device):
+    def __init__(self, progress_objective: ProgressObjective, num_envs: int, device, env=None):
         self.progress_objective = progress_objective
         self.num_envs = num_envs
         self.device = device
@@ -93,6 +141,10 @@ class ProgressObjectiveRunner:
         self.current_predicate_index: dict[str, torch.Tensor] = {}
         self.group_score: dict[str, torch.Tensor] = {}
         self.group_complete: dict[str, torch.Tensor] = {}
+        self.predicate_chains = {
+            group_name: [(_resolve_progress_predicate(predicate, env), score) for predicate, score in chain]
+            for group_name, chain in progress_objective.canonical_predicate_sequences.items()
+        }
 
         for group_name in progress_objective.group_names:
             self.current_predicate_index[group_name] = torch.zeros(num_envs, dtype=torch.long, device=device)
@@ -137,7 +189,7 @@ class ProgressObjectiveRunner:
             return []
 
         events: list[PredicateEvent] = []
-        for group_name, predicate_chain in self.progress_objective.canonical_predicate_sequences.items():
+        for group_name, predicate_chain in self.predicate_chains.items():
             events += self._step_group(env, group_name, predicate_chain, gating_mask, step_index)
         return events
 
@@ -173,7 +225,15 @@ class ProgressObjectiveRunner:
                 continue
 
             # Evaluate the predicate for all envs, reshaped to a flat (num_envs,) bool tensor.
-            result = torch.as_tensor(predicate(env), dtype=torch.bool, device=self.device).reshape(-1)
+            result = torch.as_tensor(
+                _evaluate_progress_predicate_with_state_update_mask(
+                    predicate,
+                    env,
+                    state_update_mask=at_position,
+                ),
+                dtype=torch.bool,
+                device=self.device,
+            ).reshape(-1)
             assert result.shape[0] == self.num_envs, (
                 f"Predicate {_predicate_repr(predicate)} returned shape {tuple(result.shape)};"
                 f" expected ({self.num_envs},)"
@@ -223,6 +283,11 @@ class ProgressObjectiveRunner:
             self.group_score[group_name][env_ids] = 0.0
             self.group_complete[group_name][env_ids] = False
 
+        reset_managed_predicates(
+            (predicate for predicate_chain in self.predicate_chains.values() for predicate, _score in predicate_chain),
+            env_ids,
+        )
+
     def _num_required_groups(self) -> int:
         """Number of groups that must complete for the objective to be complete."""
 
@@ -262,7 +327,7 @@ class ProgressObjectiveRunner:
         # The active predicate for a group is the one at its current chain position. Any group
         # whose pointer has run off the end of the chain is complete (no active predicate).
         for group_name in objective.group_names:
-            predicate_chain = objective.canonical_predicate_sequences[group_name]
+            predicate_chain = self.predicate_chains[group_name]
             cur_predicate_index = int(self.current_predicate_index[group_name][env_idx].item())
             if cur_predicate_index >= len(predicate_chain):
                 active_predicates[group_name] = None
@@ -290,11 +355,11 @@ class ProgressTracker:
         _events: List of events for each environment.
     """
 
-    def __init__(self, progress_objectives: list[ProgressObjective], num_envs: int, device):
+    def __init__(self, progress_objectives: list[ProgressObjective], num_envs: int, device, env=None):
         self.progress_objectives = progress_objectives
         self.num_envs = num_envs
         self.device = device
-        self.runners = [ProgressObjectiveRunner(s, num_envs, device) for s in progress_objectives]
+        self.runners = [ProgressObjectiveRunner(s, num_envs, device, env=env) for s in progress_objectives]
         self._events: list[list[PredicateEvent]] = [[] for _ in range(num_envs)]
 
     def step(self, env, step_index: torch.Tensor | None) -> None:
@@ -310,6 +375,27 @@ class ProgressTracker:
         for runner in self.runners:
             completed &= runner.is_complete()
         return completed
+
+    def get_predicate(
+        self,
+        objective_name: str,
+        sequence_name: str = DEFAULT_GROUP_NAME,
+        predicate_index: int = 0,
+    ) -> Callable:
+        """Return a predicate instance for reading cached diagnostics without evaluating it.
+
+        Args:
+            objective_name: Name of the ProgressObjective containing the predicate.
+            sequence_name: Named sequence, or the default sequence for a list definition.
+            predicate_index: Position of the predicate within that sequence.
+        """
+        for runner in self.runners:
+            if runner.progress_objective.name == objective_name:
+                predicate = runner.predicate_chains[sequence_name][predicate_index][0]
+                while isinstance(predicate, functools.partial):
+                    predicate = predicate.func
+                return predicate
+        raise KeyError(f"Unknown progress objective: {objective_name!r}")
 
     def reset(self, env_ids) -> None:
         """Reset the runners for the provided envs."""

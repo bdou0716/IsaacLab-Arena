@@ -7,6 +7,8 @@
 
 from dataclasses import dataclass
 
+from isaaclab_arena.utils.physics_backend import PhysicsBackend
+
 
 # TODO(cvolk, 2026-07-06): [typed-config-migration] Replace this flat legacy-CLI-shaped configuration with
 # nested scene, placement, and physics configs once the typed run configuration
@@ -23,9 +25,17 @@ class ArenaEnvBuilderCfg:
     resolve_on_reset: bool | None = None
     disable_fabric: bool = False
     mimic: bool = False
-    presets: str | None = None
+    presets: PhysicsBackend | None = None
     device: str = "cuda:0"
     language_instruction: str | None = None
+    record_trajectories: bool = False
+    """Whether to extend the recorder manager with per-step trajectory terms."""
+    recorder_dataset_export_dir_path: str | None = None
+    """If set, overrides the recorder manager's dataset export directory."""
+    recorder_dataset_filename: str | None = None
+    """If set, overrides the recorder manager's dataset filename."""
 
     def __post_init__(self) -> None:
         assert self.num_envs > 0, "num_envs must be greater than zero"
+        if self.presets is not None:
+            self.presets = PhysicsBackend(self.presets)

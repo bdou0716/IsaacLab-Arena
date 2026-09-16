@@ -16,6 +16,7 @@ from isaaclab.managers import SceneEntityCfg, TerminationTermCfg
 from isaaclab.utils.configclass import configclass
 
 from isaaclab_arena.assets.asset import Asset
+from isaaclab_arena.assets.object_type import ObjectType
 from isaaclab_arena.assets.register import agent_ready, register_task
 from isaaclab_arena.assets.registries import ObjectRelationLibraryRegistry
 from isaaclab_arena.embodiments.common.arm_mode import ArmMode
@@ -39,12 +40,13 @@ class PickAndPlaceTask(TaskBase):
     """Pick an object up and place it on or in a destination.
 
     Success requires the object to settle, rise above its resting height, then reach its destination
-    with upward support and low linear speed. Failure occurs when it falls below the background.
+    with support and low linear speed. Rigid objects use contact force to check support;
+    deformable objects use their geometry. Failure occurs when the object falls below the background.
 
     Args:
-        pick_up_object: Rigid object or rigid object set to pick up.
-        destination_location: Destination whose live pose and spawned geometry define placement.
-            It must be included in the environment scene.
+        pick_up_object: Object or rigid object set to pick up.
+        destination_location: Non-deformable destination whose live pose and spawned geometry
+            define placement. It must be included in the environment scene.
         background_scene: Background whose minimum object height defines the drop failure.
         destination_object: Destination asset used by the default Mimic configuration.
         episode_length_s: Maximum episode duration in seconds.
@@ -71,11 +73,17 @@ class PickAndPlaceTask(TaskBase):
         support_cone_half_angle_rad: float = math.pi / 4,
     ):
         super().__init__(episode_length_s=episode_length_s)
+        assert (
+            destination_location.object_type != ObjectType.DEFORMABLE
+        ), "PickAndPlaceTask does not support deformable destinations"
         self.pick_up_object = pick_up_object
         self.destination_object = destination_object
         self.background_scene = background_scene
         self.destination_location = destination_location
-        self.contact_sensor_name = f"contact_sensor_{pick_up_object.name}"
+        self.contact_sensor_name = (
+            None if pick_up_object.object_type == ObjectType.DEFORMABLE else f"contact_sensor_{pick_up_object.name}"
+        )
+        self.contact_sensor_cfg = SceneEntityCfg(self.contact_sensor_name) if self.contact_sensor_name else None
         self.scene_config = self.make_scene_cfg()
         self.force_threshold = force_threshold
         assert velocity_threshold >= 0.0, f"velocity_threshold must be non-negative, got {velocity_threshold}"
@@ -97,12 +105,14 @@ class PickAndPlaceTask(TaskBase):
         self._apply_reachability_constraints([self.pick_up_object, self.destination_location])
 
     def make_scene_cfg(self):
-        contact_sensor_cfg = self.pick_up_object.get_contact_sensor_cfg(
+        if self.contact_sensor_cfg is None:
+            return None
+        sensor_cfg = self.pick_up_object.get_contact_sensor_cfg(
             contact_against_object=self.destination_location,
         )
         scene_cfg_type = make_configclass(
             "SceneCfg",
-            [(self.contact_sensor_name, type(contact_sensor_cfg), contact_sensor_cfg)],
+            [(self.contact_sensor_cfg.name, type(sensor_cfg), sensor_cfg)],
         )
         return scene_cfg_type()
 
@@ -159,7 +169,7 @@ class PickAndPlaceTask(TaskBase):
                             object_on_destination,
                             object_cfg=SceneEntityCfg(self.pick_up_object.name),
                             destination_cfg=SceneEntityCfg(self.destination_location.name),
-                            contact_sensor_cfg=SceneEntityCfg(self.contact_sensor_name),
+                            contact_sensor_cfg=self.contact_sensor_cfg,
                             force_threshold=self.force_threshold,
                             velocity_threshold=self.velocity_threshold,
                             support_cone_half_angle_rad=self.support_cone_half_angle_rad,

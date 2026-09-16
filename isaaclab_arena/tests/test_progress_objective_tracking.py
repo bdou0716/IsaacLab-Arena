@@ -96,8 +96,10 @@ def _test_rest_pose_recorder_is_owned_by_env(simulation_app) -> bool:
 
 def _test_sequence_single_predicate(simulation_app) -> bool:
     """A single-element sequence becomes a default-named group with weight 1.0."""
+    from isaaclab.managers import TerminationTermCfg
+
     from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
-    from isaaclab_arena.progress_tracking.progress_tracking_utils import DEFAULT_GROUP_NAME
+    from isaaclab_arena.progress_tracking.progress_tracking_utils import DEFAULT_GROUP_NAME, _predicate_repr
 
     try:
         pred = _MockPredicate(num_envs=1)
@@ -107,6 +109,11 @@ def _test_sequence_single_predicate(simulation_app) -> bool:
         assert len(chain) == 1
         assert chain[0][0] is pred
         assert abs(chain[0][1] - 1.0) < SCORE_TOL
+
+        predicate_cfg = TerminationTermCfg(func=pred)
+        objective = ProgressObjective(name="managed", predicate_sequences=[predicate_cfg])
+        assert objective.get_chain(DEFAULT_GROUP_NAME) == [(predicate_cfg, 1.0)]
+        assert _predicate_repr(predicate_cfg) == "mock_predicate"
     except Exception as e:
         print(f"Error: {e}")
         traceback.print_exc()

@@ -44,11 +44,12 @@ from isaaclab_arena.relations.relation_solver_params import RelationSolverParams
 from isaaclab_arena.tasks.no_task import NoTask
 from isaaclab_arena.tasks.task_termination_cfg import TaskTerminationCfg
 from isaaclab_arena.terms.events import ResetBackgroundPhysics
+from isaaclab_arena.terms.recorders import ArenaEnvRecorderManagerCfg
 from isaaclab_arena.utils.configclass import combine_configclass_instances, make_configclass
-from isaaclab_arena.utils.isaaclab_utils.recorders import ArenaEnvRecorderManagerCfg
 from isaaclab_arena.utils.isaaclab_utils.simulation_app import reapply_viewer_cfg
 from isaaclab_arena.utils.isaaclab_utils.warp_patch import install_empty_cpu_warp_to_torch_patch
 from isaaclab_arena.utils.multiprocess import get_local_rank
+from isaaclab_arena.utils.physics_backend import PhysicsBackend
 from isaaclab_arena.variations import variations_hydra, variations_printing
 from isaaclab_arena.variations.variation_base import RunTimeVariationBase, VariationBase
 from isaaclab_arena.variations.variation_recorder import VariationRecorder
@@ -259,6 +260,7 @@ class ArenaEnvBuilder:
 
         # Constructing the environment by combining inputs from the scene, embodiment, and task.
         embodiment = self.arena_env.embodiment or NoEmbodiment()
+        embodiment.configure_physics_backend(self.cfg.presets)
         task = self.arena_env.task or NoTask()
         scene_cfg = combine_configclass_instances(
             "SceneCfg",
@@ -337,11 +339,16 @@ class ArenaEnvBuilder:
             "RecorderManagerCfg",
             metrics_recorder_manager_cfg,
             task.get_recorder_term_cfg(),
-            embodiment.get_recorder_term_cfg(),
+            embodiment.get_recorder_term_cfg(record_trajectories=self.cfg.record_trajectories),
             progress_tracking_recorder_cfg,
             bases=(RecorderManagerBaseCfg,),
         )
         recorder_manager_cfg = self._modify_recorder_cfg_dataset_filename(recorder_manager_cfg)
+        # Eval runs overwrite the timestamped default so rebuilds do not clobber each other.
+        if self.cfg.recorder_dataset_filename is not None:
+            recorder_manager_cfg.dataset_filename = self.cfg.recorder_dataset_filename
+        if self.cfg.recorder_dataset_export_dir_path is not None:
+            recorder_manager_cfg.dataset_export_dir_path = self.cfg.recorder_dataset_export_dir_path
 
         rewards_cfg = combine_configclass_instances(
             "RewardsCfg",
@@ -430,26 +437,28 @@ class ArenaEnvBuilder:
                 viewer=viewer_cfg,
             )
 
-        # Apply the environment configuration callback if it is set
-        # This can be used to modify the simulation configuration, etc.
-        if self.arena_env.env_cfg_callback is not None:
-            env_cfg = self.arena_env.env_cfg_callback(env_cfg)
-
         # Set seed for Isaac Lab env.
         env_cfg.seed = self.cfg.seed
 
-        # Apply the requested physics backend after the callback so it remains the final authority.
+        # Apply the requested physics backend before the callback so env-specific overrides can
+        # tune the selected preset. Callbacks that require a specific backend must validate the
+        # selected physics config before replacing or modifying it.
         presets = self.cfg.presets
         if presets is not None:
             from isaaclab_arena.environments.isaaclab_arena_manager_based_env_cfg import ArenaPhysicsCfg
 
-            env_cfg.sim.physics = getattr(ArenaPhysicsCfg(), presets)
+            env_cfg.sim.physics = getattr(ArenaPhysicsCfg(), presets.value)
 
             # Set replicate_physics for shared physics representations.
             # For Newton, without this flag, the simulation initialization
             # takes a very long time for large number of parallel environments.
-            if presets == "newton":
+            if presets is PhysicsBackend.NEWTON:
                 env_cfg.scene.replicate_physics = True
+
+        # Apply the environment configuration callback if it is set
+        # This can be used to modify the simulation configuration, etc.
+        if self.arena_env.env_cfg_callback is not None:
+            env_cfg = self.arena_env.env_cfg_callback(env_cfg)
 
         env_kwargs: dict[str, Any] = {"variation_recorder": variation_recorder}
         return env_cfg, env_kwargs

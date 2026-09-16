@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 
 from isaaclab.envs import ManagerBasedRLMimicEnv
 from isaaclab.managers import EventTermCfg
-from isaaclab.managers.recorder_manager import RecorderManagerBaseCfg
 
 from isaaclab_arena.embodiments.common.arm_mode import ArmMode
 from isaaclab_arena.relations.collision_mode import CollisionMode
@@ -19,6 +18,7 @@ from isaaclab_arena.relations.placement_asset import PlaceableAsset
 from isaaclab_arena.utils.bounding_box import AxisAlignedBoundingBox
 from isaaclab_arena.utils.cameras import ArenaCameraCfg, make_camera_observation_cfg
 from isaaclab_arena.utils.configclass import combine_configclass_instances
+from isaaclab_arena.utils.physics_backend import PhysicsBackend
 from isaaclab_arena.utils.pose import Pose, PosePerEnv, PoseRange
 
 if TYPE_CHECKING:
@@ -72,6 +72,7 @@ class EmbodimentBase(PlaceableAsset):
         self.command_config: Any | None = None
         self.mimic_env: Any | None = None
         self.xr: Any | None = None
+        self._configured_physics_backend: PhysicsBackend | None = None
 
     def get_placement_geometry_source(self) -> ArticulationGeometrySpec:
         """Return the USD articulation state used to compute embodiment geometry."""
@@ -164,6 +165,21 @@ class EmbodimentBase(PlaceableAsset):
             rotation_xyzw=tuple(float(v) for v in init_state.rot),
         )
 
+    def configure_physics_backend(self, backend: PhysicsBackend | None) -> None:
+        """Apply physics-backend-specific overrides before the env cfg is composed."""
+        if self._configured_physics_backend == backend:
+            return
+        assert self._configured_physics_backend is None, (
+            f"Embodiment '{self.name}' is already configured for physics backend "
+            f"'{self._configured_physics_backend.value}' and cannot be reconfigured for '{backend}'."
+        )
+        assert backend is not None
+        self._configure_physics_backend(backend)
+        self._configured_physics_backend = backend
+
+    def _configure_physics_backend(self, backend: PhysicsBackend) -> None:
+        """Apply subclass-specific physics-backend overrides."""
+
     def get_scene_cfg(self) -> Any:
         construction_pose = self._get_initial_pose_as_pose()
         if construction_pose is not None:
@@ -247,12 +263,32 @@ class EmbodimentBase(PlaceableAsset):
         robot.init_state.rot = pose.rotation_xyzw
         return scene_config
 
-    def get_recorder_term_cfg(self) -> RecorderManagerBaseCfg:
-        return None
+    def get_recorder_term_cfg(self, record_trajectories: bool = False) -> Any:
+        """Return this embodiment's recorder terms, or None if it defines none.
+
+        Args:
+            record_trajectories: Whether to also include the per-step trajectory recorder terms,
+                built with this embodiment's own frame transformers and scene key.
+        """
+        if not record_trajectories:
+            return None
+        from isaaclab_arena.terms.recorders import make_trajectory_recorder_terms_cfg
+
+        return make_trajectory_recorder_terms_cfg(
+            frame_transformer_names=self.get_ee_frame_transformer_names(), asset_name=self.get_scene_key()
+        )
 
     def get_scene_key(self) -> str:
         """Return the embodiment's Isaac Lab scene key."""
         return "robot"
+
+    def get_ee_frame_transformer_names(self) -> list[str]:
+        """Names of the scene's end-effector frame transformer sensors.
+
+        Override for embodiments with more than one tracked end-effector (e.g. bi-manual robots),
+        or whose single frame transformer is not named "ee_frame".
+        """
+        return ["ee_frame"]
 
     def get_ee_frame_name(self, arm_mode: ArmMode) -> str:
         # In case of multiple ee frames one can use self.mimic_arm_mode to get the correct ee frame name

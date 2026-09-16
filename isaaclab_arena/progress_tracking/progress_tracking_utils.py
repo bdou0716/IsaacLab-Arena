@@ -9,22 +9,27 @@ from __future__ import annotations
 import functools
 from collections.abc import Callable
 
-PredicateSequence = list[Callable] | list[tuple[Callable, float]]
+from isaaclab.managers import TerminationTermCfg
+
+Predicate = Callable | TerminationTermCfg
+PredicateSequence = list[Predicate] | list[tuple[Predicate, float]]
 PredicateSequences = dict[str, PredicateSequence]
 
 
 DEFAULT_GROUP_NAME = "default_group"
 
 
-def _predicate_repr(pred: Callable) -> str:
+def _predicate_repr(pred: Predicate) -> str:
     """Generate human-readable string representation for a predicate."""
 
+    if isinstance(pred, TerminationTermCfg):
+        pred = functools.partial(pred.func, **pred.params)
     if isinstance(pred, functools.partial):
         fn, args, kwargs = pred.func, pred.args, (pred.keywords or {})
     else:
         fn, args, kwargs = pred, (), {}
     # fn may be a nameless callable (e.g. a callable object), so fall back to repr.
-    name = getattr(fn, "__name__", repr(fn))
+    name = getattr(fn, "__name__", type(fn).__name__)
     parts = [repr(a) for a in args]
     parts += [f"{key}={value!r}" for key, value in kwargs.items() if isinstance(value, (str, int, float, bool))]
     return f"{name}({', '.join(parts)})" if parts else name
@@ -32,12 +37,12 @@ def _predicate_repr(pred: Callable) -> str:
 
 def _format_predicate_sequences(
     predicate_sequences: PredicateSequence | PredicateSequences,
-) -> dict[str, list[tuple[Callable, float]]]:
+) -> dict[str, list[tuple[Predicate, float]]]:
     """Convert one sequence or named sequences to weighted, named sequences.
 
     Args:
         predicate_sequences: One nonempty list of predicates or a dictionary of named lists.
-            Each list contains callables or (callable, score) pairs.
+            Each list contains predicates or (predicate, score) pairs.
 
     Returns:
         Named lists of (predicate, score) pairs. A single list uses DEFAULT_GROUP_NAME.
@@ -58,11 +63,16 @@ def _format_predicate_sequences(
     }
 
 
-def _format_predicate_sequence(sequence: PredicateSequence, sequence_name: str) -> list[tuple[Callable, float]]:
+def _is_predicate(value) -> bool:
+    """Return whether a value is a callable or a managed predicate config."""
+    return callable(value) or isinstance(value, TerminationTermCfg)
+
+
+def _format_predicate_sequence(sequence: PredicateSequence, sequence_name: str) -> list[tuple[Predicate, float]]:
     """Format one sequence into an ordered list of (predicate, score) pairs.
 
     Args:
-        sequence: A nonempty list of callables or (callable, score) tuples.
+        sequence: A nonempty list of predicates or (predicate, score) tuples.
         sequence_name: Name of the sequence.
 
     Returns:
@@ -81,9 +91,9 @@ def _format_predicate_sequence(sequence: PredicateSequence, sequence_name: str) 
                 isinstance(item, tuple) and len(item) == 2
             ), f"Sequence '{sequence_name}' index {predicate_index}: expected (callable, score) tuple, got {item!r}"
             predicate, score = item
-            assert callable(
+            assert _is_predicate(
                 predicate
-            ), f"Sequence '{sequence_name}' index {predicate_index}: predicate must be callable"
+            ), f"Sequence '{sequence_name}' index {predicate_index}: expected a callable or TerminationTermCfg"
             assert isinstance(
                 score, (int, float)
             ), f"Sequence '{sequence_name}' index {predicate_index}: score must be a number"
@@ -92,19 +102,19 @@ def _format_predicate_sequence(sequence: PredicateSequence, sequence_name: str) 
 
     chain = []
     for predicate_index, predicate in enumerate(sequence):
-        assert callable(
+        assert _is_predicate(
             predicate
-        ), f"Sequence '{sequence_name}' index {predicate_index}: expected callable, got {type(predicate).__name__}"
+        ), f"Sequence '{sequence_name}' index {predicate_index}: expected a callable or TerminationTermCfg"
         chain.append((predicate, 1.0))
     return chain
 
 
 def _normalize_scores(
-    predicate_sequences: dict[str, list[tuple[Callable, float]]],
-) -> dict[str, list[tuple[Callable, float]]]:
+    predicate_sequences: dict[str, list[tuple[Predicate, float]]],
+) -> dict[str, list[tuple[Predicate, float]]]:
     """Scale each sequence's scores to sum to 1.0. Leave zero and negative-sum sequences untouched."""
 
-    normalized_sequences: dict[str, list[tuple[Callable, float]]] = {}
+    normalized_sequences: dict[str, list[tuple[Predicate, float]]] = {}
     for sequence_name, sequence in predicate_sequences.items():
         total = sum(score for _, score in sequence)
         if total <= 0:
