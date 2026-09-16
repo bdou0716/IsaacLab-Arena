@@ -32,7 +32,8 @@ def reset_managed_predicates(
             reset_predicate_ids.add(id(predicate))
 
 
-# TODO(cvolk): Revisit this wrapper when defining the tracker-owned stateful predicate API.
+# TODO(cvolk): Revisit CompositePredicate's lifecycle forwarding during the stateful predicate redesign.
+# Retain child active masks and selected-environment resets in any replacement.
 class CompositePredicate(ConsecutivePredicate):
     """Combine child results, optionally requiring consecutive successful evaluations."""
 

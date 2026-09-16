@@ -43,7 +43,8 @@ def _resolve_progress_predicate(predicate, env):
     """Instantiate a managed predicate config when the tracker gains access to the environment."""
 
     # Isaac Lab does not resolve configs inside ProgressObjective dataclasses.
-    # TODO(cvolk): Revisit this adapter when defining the stateful predicate API.
+    # TODO(cvolk): Revisit this TerminationTermCfg adapter during the stateful predicate redesign.
+    # Preserve environment-aware construction and nested SceneEntityCfg resolution.
 
     if not isinstance(predicate, TerminationTermCfg):
         return predicate
@@ -57,6 +58,8 @@ def _resolve_progress_predicate(predicate, env):
 def _evaluate_progress_predicate_with_state_update_mask(predicate, env, state_update_mask: torch.Tensor):
     """Evaluate a predicate without mutating inactive consecutive-predicate environments."""
 
+    # TODO(cvolk): Revisit ConsecutivePredicate-specific dispatch during the stateful predicate redesign.
+    # Preserve state updates only for environments where the predicate is active.
     predicate_func = predicate.func if isinstance(predicate, functools.partial) else predicate
     if isinstance(predicate_func, ConsecutivePredicate):
         return predicate(env, active_mask=state_update_mask)
@@ -376,6 +379,9 @@ class ProgressTracker:
             completed &= runner.is_complete()
         return completed
 
+    # TODO(cvolk): Revisit predicate-instance access during the stateful predicate redesign.
+    # Retained for GearInsertionFractionRecorder and GearEnvBehaviourDemo, which read
+    # cached CompositePredicate results.
     def get_predicate(
         self,
         objective_name: str,
