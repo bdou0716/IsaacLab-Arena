@@ -192,34 +192,19 @@ class EmbodimentBase(PlaceableAsset):
         construction_pose = self._get_initial_pose_as_pose()
         if construction_pose is not None:
             self.scene_config = self._update_scene_cfg_with_robot_initial_pose(self.scene_config, construction_pose)
-        if self.enable_cameras:
-            if self.camera_config is not None:
-                return self._rename_cfg(
-                    combine_configclass_instances(
-                        "SceneCfg",
-                        self.scene_config,
-                        self.get_camera_cfg(),
-                    ),
-                    "scene",
-                )
-        return self._rename_cfg(self.scene_config, "scene")
+        cfg = self.scene_config
+        if self.enable_cameras and self.camera_config is not None:
+            cfg = combine_configclass_instances("SceneCfg", cfg, self.get_camera_cfg())
+        return self._rename_cfg(cfg, "scene")
 
     def get_action_cfg(self) -> Any:
         return self._rename_cfg(self.action_config, "actions")
 
     def get_observation_cfg(self) -> Any:
-        if self.enable_cameras:
-            if self.camera_config is not None:
-                camera_observation_config = make_camera_observation_cfg(self.camera_config)
-                return self._rename_cfg(
-                    combine_configclass_instances(
-                        "ObservationCfg",
-                        self.observation_config,
-                        camera_observation_config,
-                    ),
-                    "observations",
-                )
-        return self._rename_cfg(self.observation_config, "observations")
+        cfg = self.observation_config
+        if self.enable_cameras and self.camera_config is not None:
+            cfg = combine_configclass_instances("ObservationCfg", cfg, make_camera_observation_cfg(self.camera_config))
+        return self._rename_cfg(cfg, "observations")
 
     def get_rewards_cfg(self) -> Any:
         return self._rename_cfg(self.reward_config, "rewards")
