@@ -24,7 +24,7 @@ class NoTask(TaskBase):
         pass
 
     def get_termination_cfg(self) -> TaskTerminationCfg:
-        return TaskTerminationCfg(timeout_s=self.episode_length_s)
+        return TaskTerminationCfg(timeout_s=None)
 
     def get_events_cfg(self):
         pass

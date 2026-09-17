@@ -60,6 +60,11 @@ class IsaacLabArenaManagerBasedRLEnv(ManagerBasedRLEnv):
         return self._arena_world
 
     @property
+    def progress_tracker(self) -> ProgressTracker | None:
+        """The ProgressTracker owned by TaskSuccessTerm, or None if not initialized."""
+        return self._progress_tracker
+
+    @property
     def variation_recorder(self) -> VariationRecorder | None:
         """The recorder of variation samples, or ``None`` if the env was not built with one."""
         return self._variation_recorder

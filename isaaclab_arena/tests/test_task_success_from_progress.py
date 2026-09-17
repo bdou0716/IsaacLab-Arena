@@ -11,6 +11,12 @@ from types import SimpleNamespace
 from isaaclab_arena.tests.utils.persistent_simulation_app import run_function_with_persistent_simulation_app
 
 
+class _ProgressEnvironment(SimpleNamespace):
+    @property
+    def progress_tracker(self):
+        return self._progress_tracker
+
+
 def _controlled_predicate(env, predicate_name):
     env.predicate_calls[predicate_name] += 1
     return env.predicate_results[predicate_name]
@@ -26,7 +32,7 @@ def _make_environment_and_manager(predicate_names):
     from isaaclab_arena.progress_tracking.task_success import TaskSuccessTerm
     from isaaclab_arena.tasks.predicates.object_settling import ObjectInitialRestPoseRecorder
 
-    env = SimpleNamespace(
+    env = _ProgressEnvironment(
         num_envs=2,
         device="cpu",
         sim=SimpleNamespace(is_playing=lambda: True),
@@ -47,7 +53,7 @@ def _make_environment_and_manager(predicate_names):
     # Isaac Lab constructs recorders before the termination manager that owns progress.
     recorder_cfg = ProgressTrackingRecorderCfg()
     recorder = recorder_cfg.class_type(recorder_cfg, env)
-    assert env._progress_tracker is None
+    assert env.progress_tracker is None
     manager = TerminationManager(
         {"success": TerminationTermCfg(func=TaskSuccessTerm, params={"success_objectives": objectives})},
         env,
@@ -116,6 +122,8 @@ def _test_manager_reset_clears_only_selected_progress_and_rest_poses(simulation_
         (slice(None), [True, True]),
     ]:
         env, manager, recorder = _make_environment_and_manager(["settle", "place"])
+        progress_tracker = env.progress_tracker
+        assert progress_tracker is not None
         resting_positions = torch.tensor([[0.0, 0.0, 0.2], [1.0, 0.0, 0.3]])
         env.object_initial_rest_pose_recorder.record("object", resting_positions, torch.tensor([True, True]))
         for _ in range(2):
@@ -125,6 +133,8 @@ def _test_manager_reset_clears_only_selected_progress_and_rest_poses(simulation_
 
         # A full manager reset passes slice(None) to its class terms.
         manager.reset(env_ids=reset_ids)
+        assert env.progress_tracker is progress_tracker
+        assert progress_tracker.is_complete().tolist() == [not was_reset for was_reset in reset_mask]
         env.episode_length_buf[reset_mask] = 0
         recorder.record_post_step()
         progress = env.extras["progress_tracking"]
@@ -262,8 +272,11 @@ def _test_manager_rejects_missing_success_objectives(simulation_app):
 
 
 def _test_builder_installs_success_only_for_success_objectives(simulation_app):
+    import torch
+    from dataclasses import replace
+
     from isaaclab.envs.mdp import time_out
-    from isaaclab.managers import TerminationTermCfg
+    from isaaclab.managers import TerminationManager, TerminationTermCfg
 
     from isaaclab_arena.embodiments.no_embodiment import NoEmbodiment
     from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
@@ -288,34 +301,71 @@ def _test_builder_installs_success_only_for_success_objectives(simulation_app):
     )
 
     class _ProgressTask(NoTask):
-        def get_termination_cfg(self):
-            return progress_task_termination_cfg
+        def __init__(self, termination_cfg):
+            super().__init__()
+            self.termination_cfg = termination_cfg
 
-    for task in [NoTask(), _ProgressTask()]:
+        def get_termination_cfg(self):
+            return self.termination_cfg
+
+    tasks = [
+        NoTask(),
+        _ProgressTask(progress_task_termination_cfg),
+        _ProgressTask(replace(progress_task_termination_cfg, timeout_s=None)),
+    ]
+    for task in tasks:
         description = IsaacLabArenaEnvironment(
             name="progress_success_builder", scene=Scene(), task=task, embodiment=NoEmbodiment()
         )
         builder = ArenaEnvBuilder(description, ArenaEnvBuilderCfg(num_envs=2, solve_relations=False, device="cpu"))
         env_cfg, _ = builder.compose_manager_cfg()
-        assert isinstance(env_cfg.terminations, dict)
-        success_term = env_cfg.terminations.get("success")
+        success_term = getattr(env_cfg.terminations, "success", None)
+        configured_timeout_s = task.get_termination_cfg().timeout_s
         if isinstance(task, _ProgressTask):
-            assert set(env_cfg.terminations) == {"success", "object_dropped", "time_out"}
+            expected_terms = {"success", "object_dropped"}
+            if configured_timeout_s is not None:
+                expected_terms.add("time_out")
+            assert set(env_cfg.terminations.to_dict()) == expected_terms
             assert isinstance(success_term, TerminationTermCfg)
             assert success_term.func is TaskSuccessTerm
             assert len(success_term.params["success_objectives"]) == 1
             assert success_term.params["success_objectives"][0].name == "done"
-            assert env_cfg.terminations["object_dropped"].func is _controlled_predicate
-            assert env_cfg.terminations["object_dropped"].params == {"predicate_name": "object_dropped"}
+            assert env_cfg.terminations.object_dropped.func is _controlled_predicate
+            assert env_cfg.terminations.object_dropped.params == {"predicate_name": "object_dropped"}
             assert set(progress_task_termination_cfg.failures) == {"object_dropped"}
-            # The task configuration is authoritative, not the constructor's default episode length.
-            assert env_cfg.episode_length_s == 12.0
         else:
-            assert set(env_cfg.terminations) == {"time_out"}
+            assert env_cfg.terminations.to_dict() == {}
             assert success_term is None
+
+        if configured_timeout_s is None:
+            assert "time_out" not in env_cfg.terminations.to_dict()
             assert env_cfg.episode_length_s == task.episode_length_s
-        assert env_cfg.terminations["time_out"].func is time_out
-        assert env_cfg.terminations["time_out"].time_out
+        else:
+            # The task configuration is authoritative, not the constructor's default episode length.
+            assert env_cfg.episode_length_s == configured_timeout_s
+            assert env_cfg.terminations.time_out.func is time_out
+            assert env_cfg.terminations.time_out.time_out
+
+        # Recording workflows disable these terms through config attributes.
+        env_cfg.terminations.success = None
+        env_cfg.terminations.time_out = None
+        env = SimpleNamespace(
+            num_envs=2,
+            device="cpu",
+            sim=SimpleNamespace(is_playing=lambda: True),
+            scene={},
+            episode_length_buf=torch.full((2,), 100, dtype=torch.long),
+            max_episode_length=70,
+            predicate_results={"object_dropped": torch.tensor([True, False])},
+            predicate_calls={"object_dropped": 0},
+        )
+        manager = TerminationManager(env_cfg.terminations, env)
+        if isinstance(task, _ProgressTask):
+            assert manager.active_terms == ["object_dropped"]
+            assert manager.compute().tolist() == [True, False]
+        else:
+            assert manager.active_terms == []
+            assert manager.compute().tolist() == [False, False]
     return True
 
 
@@ -330,6 +380,7 @@ def _test_task_termination_config_validation(simulation_app):
     first_config.failures["object_dropped"] = TerminationTermCfg(func=_controlled_predicate)
     assert second_config.failures == {}
     assert first_config.success == second_config.success == []
+    assert TaskTerminationCfg(timeout_s=None).timeout_s is None
 
     for invalid_timeout in [0.0, -1.0, float("inf"), float("nan")]:
         with pytest.raises(AssertionError, match="timeout_s"):
@@ -411,14 +462,14 @@ def _test_pick_and_place_uses_typed_success_failure_and_timeout(simulation_app):
         patch.object(task, "get_metrics", return_value=[]),
     ):
         env_cfg, _ = builder.compose_manager_cfg()
-    assert env_cfg.terminations["success"].func is TaskSuccessTerm
-    objectives = env_cfg.terminations["success"].params["success_objectives"]
+    assert env_cfg.terminations.success.func is TaskSuccessTerm
+    objectives = env_cfg.terminations.success.params["success_objectives"]
     assert len(objectives) == 1
     assert [predicate.func for predicate in objectives[0].predicate_sequence] == expected_predicates
-    assert env_cfg.terminations["object_dropped"].func is root_height_below_minimum
-    assert env_cfg.terminations["object_dropped"].params["minimum_height"] == -0.1
-    assert env_cfg.terminations["time_out"].func is time_out
-    assert env_cfg.terminations["time_out"].time_out
+    assert env_cfg.terminations.object_dropped.func is root_height_below_minimum
+    assert env_cfg.terminations.object_dropped.params["minimum_height"] == -0.1
+    assert env_cfg.terminations.time_out.func is time_out
+    assert env_cfg.terminations.time_out.time_out
     assert env_cfg.episode_length_s == 12.0
     assert env_cfg.recorders.progress_tracking.class_type is ProgressTrackingRecorder
     assert getattr(env_cfg.events, "reset_progress_objectives", None) is None

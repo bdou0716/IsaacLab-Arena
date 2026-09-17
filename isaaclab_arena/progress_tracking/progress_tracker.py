@@ -43,6 +43,9 @@ def _resolve_progress_predicate(predicate, env):
     """Instantiate a managed predicate config when the tracker gains access to the environment."""
 
     # Isaac Lab does not resolve configs inside ProgressObjective dataclasses.
+    # NOTE(cvolk): TaskSuccessTerm creates the tracker while TerminationManager is
+    # still being constructed, before env.termination_manager is assigned.
+    # We therefore cannot delegate nested predicate initialization to that manager.
     # TODO(cvolk): Revisit this TerminationTermCfg adapter during the stateful predicate redesign.
     # Preserve environment-aware construction and nested SceneEntityCfg resolution.
 
@@ -489,7 +492,7 @@ class ProgressTrackingRecorder(RecorderTerm):
     def record_post_step(self):
         """Publish the current progress snapshot without advancing the tracker."""
 
-        progress_tracker = self._env._progress_tracker
+        progress_tracker = self._env.progress_tracker
         assert progress_tracker is not None, "Task success must initialize the progress tracker before recording."
         self._env.extras["progress_tracking"] = {
             "states": progress_tracker.get_state(),
@@ -507,7 +510,3 @@ class ProgressTrackingRecorderCfg(RecorderTermCfg):
 @configclass
 class ProgressTrackingRecorderManagerCfg(RecorderManagerBaseCfg):
     progress_tracking: ProgressTrackingRecorderCfg = ProgressTrackingRecorderCfg()
-
-
-def make_progress_tracking_recorder_cfg() -> ProgressTrackingRecorderManagerCfg:
-    return ProgressTrackingRecorderManagerCfg()

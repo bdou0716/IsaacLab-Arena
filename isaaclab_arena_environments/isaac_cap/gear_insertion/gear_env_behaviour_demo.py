@@ -120,7 +120,9 @@ class GearEnvBehaviourDemo(EnvBehaviourDemo):
         assert len(body_ids) == 1, f"Expected one robotiq_base body, got {body_ids}."
         self.ee_body_id = int(body_ids[0])
 
-        self.success_predicate = self.base_env._progress_tracker.get_predicate("gear_insertion")
+        progress_tracker = self.base_env.progress_tracker
+        assert progress_tracker is not None, "Gear insertion diagnostics require task success tracking."
+        self.success_predicate = progress_tracker.get_predicate("gear_insertion")
         task = self.arena_environment.task
         self.plate_name = task.plate.name
         self.gear_names = tuple(gear.name for gear in task.gears)

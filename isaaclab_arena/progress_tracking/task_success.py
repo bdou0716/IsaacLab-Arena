@@ -31,7 +31,7 @@ class TaskSuccessTerm(ManagerTermBase):
         # Isaac Lab validates required __call__ parameters before constructing this term.
         success_objectives: list[ProgressObjective] = cfg.params["success_objectives"]
         assert success_objectives, "Task success requires at least one success objective."
-        assert env._progress_tracker is None, "Only one root term may own task progress."
+        assert env.progress_tracker is None, "Only one root term may own task progress."
         self._progress_tracker = ProgressTracker(success_objectives, num_envs=env.num_envs, device=env.device, env=env)
         self._environment_ids = torch.arange(env.num_envs, device=env.device)
         env._progress_tracker = self._progress_tracker

@@ -75,7 +75,9 @@ class GearInsertionFractionRecorder(RecorderTerm):
             self.first_reset = False
             return None, None
 
-        success_predicate = self._env._progress_tracker.get_predicate("gear_insertion")
+        progress_tracker = self._env.progress_tracker
+        assert progress_tracker is not None, "Gear insertion diagnostics require task success tracking."
+        success_predicate = progress_tracker.get_predicate("gear_insertion")
         if not hasattr(success_predicate, "results"):
             raise TypeError("gear insertion success predicate does not expose per-gear completion")
         per_gear = success_predicate.results[:, env_ids].transpose(0, 1)

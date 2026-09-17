@@ -15,8 +15,8 @@ from isaaclab_arena.progress_tracking.progress_objective import ProgressObjectiv
 class TaskTerminationCfg:
     """Declare when a task succeeds, fails, or runs out of time."""
 
-    timeout_s: float
-    """Overall episode time budget in seconds."""
+    timeout_s: float | None
+    """Episode time limit in seconds; None disables timeout termination."""
 
     success: list[ProgressObjective] = field(default_factory=list)
     """Objectives that must all complete for success; an empty list disables success termination."""
@@ -25,7 +25,10 @@ class TaskTerminationCfg:
     """Named failure conditions; any true condition ends the episode."""
 
     def __post_init__(self):
-        assert math.isfinite(self.timeout_s) and self.timeout_s > 0, "timeout_s must be finite and positive."
+        if self.timeout_s is not None:
+            assert (
+                math.isfinite(self.timeout_s) and self.timeout_s > 0
+            ), "timeout_s must be finite and positive, or None to disable timeout."
         assert isinstance(self.success, list) and all(
             isinstance(objective, ProgressObjective) for objective in self.success
         ), "success must be a list of ProgressObjective definitions."

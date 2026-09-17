@@ -33,7 +33,7 @@ from isaaclab_arena.environments.relation_solver_interface import solve_and_appl
 from isaaclab_arena.metrics.metric_base import MetricBase
 from isaaclab_arena.metrics.metric_term_cfg import MetricTermCfg
 from isaaclab_arena.metrics.recorder_manager_utils import metrics_to_recorder_manager_cfg
-from isaaclab_arena.progress_tracking.progress_tracker import make_progress_tracking_recorder_cfg
+from isaaclab_arena.progress_tracking.progress_tracker import ProgressTrackingRecorderManagerCfg
 from isaaclab_arena.progress_tracking.task_success import TaskSuccessTerm
 from isaaclab_arena.recording.common_terms import CoreEpisodeRecorderTermCfg, VariationEpisodeRecorderTermCfg
 from isaaclab_arena.recording.episode_recorder_manager import EpisodeRecorderTermCfg
@@ -191,17 +191,18 @@ class ArenaEnvBuilder:
     def _build_termination_manager_cfg(
         self,
         task_termination_cfg: TaskTerminationCfg,
-    ) -> dict[str, TerminationTermCfg]:
-        """Translate TaskTerminationCfg into Isaac Lab termination terms.
+    ) -> object:
+        """Translate TaskTerminationCfg into an Isaac Lab termination configclass.
 
         Args:
             task_termination_cfg: Task-owned success objectives, failures, and timeout.
 
         Returns:
-            Named failure and timeout terms, plus a success term when objectives are defined.
+            A configclass containing the requested failure, timeout, and success terms.
         """
         termination_terms = dict(task_termination_cfg.failures)
-        termination_terms["time_out"] = TerminationTermCfg(func=time_out, time_out=True)
+        if task_termination_cfg.timeout_s is not None:
+            termination_terms["time_out"] = TerminationTermCfg(func=time_out, time_out=True)
         success_objectives = task_termination_cfg.success
 
         # Install the shared success term when the task defines success objectives.
@@ -211,7 +212,8 @@ class ArenaEnvBuilder:
                 params={"success_objectives": success_objectives},
             )
             termination_terms["success"] = success_term
-        return termination_terms
+        termination_fields = [(name, TerminationTermCfg, term) for name, term in termination_terms.items()]
+        return make_configclass("TerminationsCfg", termination_fields)()
 
     def _compose_episode_recorders_cfg(self, extra_terms: dict[str, EpisodeRecorderTermCfg] | None = None) -> object:
         """Build a configclass container with one EpisodeRecorderTermCfg field per episode recorder term.
@@ -331,7 +333,7 @@ class ArenaEnvBuilder:
         metrics_cfg = self._compose_metrics_cfg(metrics)
         metrics_recorder_manager_cfg = metrics_to_recorder_manager_cfg(metrics)
         progress_tracking_recorder_cfg: Any = (
-            make_progress_tracking_recorder_cfg() if task_termination_cfg.success else None
+            ProgressTrackingRecorderManagerCfg() if task_termination_cfg.success else None
         )
 
         # Base has to be specified explicitly to avoid type errors and not lose inheritance.
@@ -376,6 +378,9 @@ class ArenaEnvBuilder:
         viewer_cfg = task.get_viewer_cfg()
 
         episode_length_s = task_termination_cfg.timeout_s
+        if episode_length_s is None:
+            # Isaac Lab still needs a numeric episode length without timeout termination.
+            episode_length_s = task.get_episode_length_s()
 
         task_description = self.cfg.language_instruction or task.get_task_description()
 
