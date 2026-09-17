@@ -209,7 +209,11 @@ class ArenaEnvBuilder:
         if success_objectives:
             success_term = TerminationTermCfg(
                 func=TaskSuccessTerm,
-                params={"success_objectives": success_objectives},
+                params={
+                    "success_objectives": success_objectives,
+                    "subtasks_are_sequential": task_termination_cfg.subtasks_are_sequential,
+                    "desired_subtask_success_state": task_termination_cfg.desired_subtask_success_state,
+                },
             )
             termination_terms["success"] = success_term
         termination_fields = [(name, TerminationTermCfg, term) for name, term in termination_terms.items()]

@@ -65,14 +65,17 @@ class ProgressObjective:
 
     canonical_predicate_sequences: dict[str, list[tuple[Predicate, float]]] = field(init=False, repr=False)
 
-    # Index of the parent TaskBase this progress objective belongs to. Set automatically by
-    # CompositeTaskBase.get_progress_objectives() when used with composite tasks.
     parent_subtask_idx: int | None = None
+    """Subtask index assigned by CompositeTaskBase; None for standalone task objectives."""
 
     def __post_init__(self):
         assert 0.0 <= self.score <= 1.0, f"ProgressObjective '{self.name}': score must be in [0, 1], got {self.score}"
         # Accept either a ProgressObjectiveCompletionMode or its string value; normalize to the enum (raises on invalid).
         self.logical = ProgressObjectiveCompletionMode(self.logical)
+
+        assert self.parent_subtask_idx is None or (
+            isinstance(self.parent_subtask_idx, int) and self.parent_subtask_idx >= 0
+        ), "parent_subtask_idx must be a non-negative integer or None."
 
         has_single_sequence = self.predicate_sequence is not None
         has_named_sequences = self.predicate_sequences is not None

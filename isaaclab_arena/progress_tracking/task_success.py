@@ -21,8 +21,8 @@ class TaskSuccessTerm(ManagerTermBase):
 
     ArenaEnvBuilder registers this term with Isaac Lab's TerminationManager.
     TaskSuccessTerm creates and owns ProgressTracker. TerminationManager
-    calls this term to update progress and check whether all success
-    objectives are complete. On episode resets, TerminationManager calls
+    calls this term to update progress and check the task's success
+    requirements. On episode resets, TerminationManager calls
     this term's reset() to clear progress for the restarting environments.
     """
 
@@ -32,12 +32,25 @@ class TaskSuccessTerm(ManagerTermBase):
         success_objectives: list[ProgressObjective] = cfg.params["success_objectives"]
         assert success_objectives, "Task success requires at least one success objective."
         assert env.progress_tracker is None, "Only one root term may own task progress."
-        self._progress_tracker = ProgressTracker(success_objectives, num_envs=env.num_envs, device=env.device, env=env)
+        self._progress_tracker = ProgressTracker(
+            success_objectives,
+            num_envs=env.num_envs,
+            device=env.device,
+            env=env,
+            subtasks_are_sequential=cfg.params.get("subtasks_are_sequential", False),
+            desired_subtask_success_state=cfg.params.get("desired_subtask_success_state"),
+        )
         self._environment_ids = torch.arange(env.num_envs, device=env.device)
         env._progress_tracker = self._progress_tracker
 
-    def __call__(self, env, success_objectives: list[ProgressObjective]) -> torch.Tensor:
-        """Update ProgressTracker and return whether all success objectives are complete in each environment."""
+    def __call__(
+        self,
+        env,
+        success_objectives: list[ProgressObjective],
+        subtasks_are_sequential: bool = False,
+        desired_subtask_success_state: list[bool | None] | None = None,
+    ) -> torch.Tensor:
+        """Update ProgressTracker and return whether the task's success requirements are met in each environment."""
         self._progress_tracker.step(env, step_index=env.episode_length_buf)
         return self._progress_tracker.is_complete()
 
