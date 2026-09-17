@@ -112,7 +112,15 @@ def _rewrite(value, scene_map, action_map, location, instance_key, attribute="")
             key = scene_map.get("robot")
             if key is not None:
                 return value.replace("{ENV_REGEX_NS}/Robot", f"{{ENV_REGEX_NS}}/{key[0].upper()}{key[1:]}")
-        if attribute in {"asset_name", "frame_transformer_name", "camera_name", "sensor_name", "sensor_names"}:
+        if attribute in {
+            "asset_name",
+            "frame_transformer_name",
+            "camera_name",
+            "sensor_name",
+            "sensor_names",
+            "scene_writes",
+            "write_pose_list",
+        }:
             return scene_map.get(value, value)
         if attribute == "action_name":
             return action_map.get(value, value)
@@ -144,19 +152,7 @@ def _rewrite(value, scene_map, action_map, location, instance_key, attribute="")
             for key, child in value.items()
         }
     if isinstance(value, (list, tuple)):
-        # Placement reset events contain (scene key, pose) pairs instead of SceneEntityCfg.
-        if attribute in {"scene_writes", "write_pose_list"}:
-            return _rewrite_pose_writes(value, scene_map)
         return type(value)(_rewrite(child, scene_map, action_map, location, instance_key, attribute) for child in value)
-    return value
-
-
-def _rewrite_pose_writes(value, scene_map):
-    """Rewrite the scene keys nested in placement pose writes."""
-    if isinstance(value, str):
-        return scene_map.get(value, value)
-    if isinstance(value, (list, tuple)):
-        return type(value)(_rewrite_pose_writes(child, scene_map) for child in value)
     return value
 
 
