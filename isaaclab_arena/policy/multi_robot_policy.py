@@ -96,13 +96,10 @@ class MultiRobotPolicy(PolicyBase[MultiRobotPolicyCfg]):
             assert (
                 isinstance(actions, torch.Tensor) and tuple(actions.shape) == expected
             ), f"Policy '{name}' must return actions shaped {expected}"
-            for robot_index, key in enumerate(keys):
-                rows = actions[robot_index * self._num_envs : (robot_index + 1) * self._num_envs]
-                source_column = 0
-                for _, columns in self._layouts[key]:
-                    width = columns.stop - columns.start
-                    output[:, columns] = rows[:, source_column : source_column + width]
-                    source_column += width
+            for key, rows in zip(keys, actions.split(self._num_envs)):
+                term_actions = rows.split(view.action_manager.action_term_dim, dim=-1)
+                for (_, columns), values in zip(self._layouts[key], term_actions):
+                    output[:, columns] = values
         return output
 
     def reset(self, env_ids=None):
@@ -115,7 +112,7 @@ class MultiRobotPolicy(PolicyBase[MultiRobotPolicyCfg]):
         assert env_ids.ndim == 1, "Reset indices must be a one-dimensional tensor"
         assert bool(((env_ids >= 0) & (env_ids < self._num_envs)).all()), "Reset indices are out of range"
         for name, policy in self.policies.items():
-            count = sum(assigned == name for assigned in self.config.assignments.values())
+            count = len(self._views[name][0])
             policy.reset(torch.cat([env_ids + index * self._num_envs for index in range(count)]))
 
     def set_task_description(self, task_description):
