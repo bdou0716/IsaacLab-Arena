@@ -57,7 +57,11 @@ from isaaclab_arena.terms.recorders import (
     validate_recorded_frame_names,
 )
 from isaaclab_arena.utils.cameras import combine_observation_cfgs
-from isaaclab_arena.utils.configclass import combine_configclass_instances, make_configclass
+from isaaclab_arena.utils.configclass import (
+    check_configclass_field_duplicates,
+    combine_configclass_instances,
+    make_configclass,
+)
 from isaaclab_arena.utils.instance_rename import scope_last_action
 from isaaclab_arena.utils.isaaclab_utils.simulation_app import reapply_viewer_cfg
 from isaaclab_arena.utils.isaaclab_utils.warp_patch import install_empty_cpu_warp_to_torch_patch
@@ -75,8 +79,8 @@ def _combine_robot_cfgs(name: str, configs: list[Any]) -> Any:
     configs = [cfg for cfg in configs if cfg is not None]
     if len(configs) == 1:
         return configs[0]
-    names = [field.name for cfg in configs for field in fields(cfg)]
-    assert len(names) == len(set(names)), f"Robot configurations have duplicate fields in {name}: {names}"
+    duplicates = check_configclass_field_duplicates(*configs)
+    assert not duplicates, f"Robot configurations have duplicate fields in {name}: {duplicates}"
     return combine_configclass_instances(name, *configs) if configs else None
 
 
