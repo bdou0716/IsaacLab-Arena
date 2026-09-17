@@ -33,9 +33,6 @@ class TaskSuccessTerm(ManagerTermBase):
         # Isaac Lab validates required __call__ parameters before constructing this term.
         success_objectives: list[ProgressObjective] = cfg.params["success_objectives"]
         tracked_objectives = cfg.params.get("tracked_objectives", [])
-        assert (
-            success_objectives or tracked_objectives
-        ), "Task progress requires at least one success or tracked objective."
         assert env.progress_tracker is None, "Only one root term may own task progress."
         self._progress_tracker = ProgressTracker(
             success_objectives,

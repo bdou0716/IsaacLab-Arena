@@ -351,11 +351,12 @@ def _test_success_requires_objectives_and_one_owner(simulation_app):
     from isaaclab_arena.progress_tracking.task_success import TaskSuccessTerm
 
     env, manager, _ = _make_environment_and_manager(["place"])
+    with pytest.raises(AssertionError, match="Only one root term"):
+        TaskSuccessTerm(manager.get_term_cfg("success"), env)
+    env._progress_tracker = None
     empty_cfg = TerminationTermCfg(func=TaskSuccessTerm, params={"success_objectives": []})
     with pytest.raises(AssertionError, match="at least one success or tracked objective"):
         TaskSuccessTerm(empty_cfg, env)
-    with pytest.raises(AssertionError, match="Only one root term"):
-        TaskSuccessTerm(manager.get_term_cfg("success"), env)
     return True
 
 
