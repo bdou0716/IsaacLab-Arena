@@ -68,6 +68,7 @@ The configuration getters copy their output before applying these naming rules:
 * Observation groups and action, event, reward, curriculum, command, termination,
   and recorder terms gain the instance prefix.
 * Entity references and frame-transformer sensor references follow the renamed scene fields.
+* Logical target-frame names gain the prefix, keeping recorded poses distinct for each robot.
 * Camera variation bindings follow the renamed cameras. Their catalogue names stay unchanged.
 * Camera terms gain the prefix inside the shared ``camera_obs`` observation group.
 

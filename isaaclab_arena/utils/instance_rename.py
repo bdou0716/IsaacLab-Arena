@@ -23,6 +23,7 @@ from typing import Any
 
 from isaaclab.envs import mdp
 from isaaclab.managers import ObservationGroupCfg, ObservationTermCfg, SceneEntityCfg
+from isaaclab.sensors import FrameTransformerCfg
 
 from isaaclab_arena.utils.configclass import make_configclass
 
@@ -88,12 +89,14 @@ def rename_instance_cfg(
                 name = (
                     f"{instance_key}_{camera_field.name}" if isinstance(term, ObservationTermCfg) else camera_field.name
                 )
-                camera_fields.append((name, camera_field.type, _rewrite(term, scene_map, action_map, location)))
+                camera_fields.append(
+                    (name, camera_field.type, _rewrite(term, scene_map, action_map, location, instance_key))
+                )
             group = make_configclass("InstanceCameraObsCfg", camera_fields, bases=(ObservationGroupCfg,))()
             renamed_fields.append(("camera_obs", type(group), group))
             continue
         name = scene_map[field.name] if kind == "scene" else f"{instance_key}_{field.name}"
-        value = _rewrite(value, scene_map, action_map, location)
+        value = _rewrite(value, scene_map, action_map, location, instance_key)
         renamed_fields.append((name, field.type, value))
     names = [name for name, _, _ in renamed_fields]
     assert len(names) == len(set(names)), f"{kind}: instance names collide"
@@ -102,7 +105,7 @@ def rename_instance_cfg(
     return renamed
 
 
-def _rewrite(value, scene_map, action_map, location, attribute=""):
+def _rewrite(value, scene_map, action_map, location, instance_key, attribute=""):
     if isinstance(value, str):
         if attribute == "prim_path":
             key = scene_map.get("robot")
@@ -121,21 +124,28 @@ def _rewrite(value, scene_map, action_map, location, attribute=""):
         value.params = {"action_names": tuple(action_map.values())}
         return value
     if is_dataclass(value) and not isinstance(value, type):
+        if isinstance(value, FrameTransformerCfg.FrameCfg):
+            value.name = f"{instance_key}_{value.name}"
         if hasattr(value, "func") and hasattr(value, "params"):
             _validate_callable(value.func, value.params, scene_map, action_map, location)
         for field in fields(value):
             child = getattr(value, field.name)
             object.__setattr__(
-                value, field.name, _rewrite(child, scene_map, action_map, f"{location}.{field.name}", field.name)
+                value,
+                field.name,
+                _rewrite(child, scene_map, action_map, f"{location}.{field.name}", instance_key, field.name),
             )
         return value
     if isinstance(value, dict):
-        return {key: _rewrite(child, scene_map, action_map, f"{location}.{key}", key) for key, child in value.items()}
+        return {
+            key: _rewrite(child, scene_map, action_map, f"{location}.{key}", instance_key, key)
+            for key, child in value.items()
+        }
     if isinstance(value, (list, tuple)):
         # Placement reset events contain (scene key, pose) pairs instead of SceneEntityCfg.
         if attribute in {"scene_writes", "write_pose_list"}:
             return _rewrite_pose_writes(value, scene_map)
-        return type(value)(_rewrite(child, scene_map, action_map, location, attribute) for child in value)
+        return type(value)(_rewrite(child, scene_map, action_map, location, instance_key, attribute) for child in value)
     return value
 
 

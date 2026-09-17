@@ -45,6 +45,13 @@ def _test_instance_configurations(simulation_app):
     assert not hasattr(left.get_observation_cfg(), "left_camera_obs")
     assert camera_group.left_wrist_cam_rgb.params["sensor_cfg"].name == "left_wrist_cam"
     assert left.get_scene_cfg().left_wrist_cam.prim_path.startswith("{ENV_REGEX_NS}/Left/")
+    original_frames = [frame.name for frame in original.get_scene_cfg().ee_frame.target_frames]
+    assert len(original_frames) == 3
+    for robot, key in ((left, "left"), (right, "right")):
+        for _ in range(2):
+            sensor = getattr(robot.get_scene_cfg(), f"{key}_ee_frame")
+            assert [frame.name for frame in sensor.target_frames] == [f"{key}_{name}" for name in original_frames]
+        assert [frame.name for frame in robot.scene_config.ee_frame.target_frames] == original_frames
     assert {variation.name for variation in left.get_variations()} == {
         "camera_extrinsics_wrist_cam",
         "camera_intrinsics_wrist_cam",
