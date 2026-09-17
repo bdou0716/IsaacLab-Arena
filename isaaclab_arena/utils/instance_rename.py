@@ -106,6 +106,7 @@ def rename_instance_cfg(
 
 
 def _rewrite(value, scene_map, action_map, location, instance_key, attribute=""):
+    """Rewrite configured entity names while preserving physical link names."""
     if isinstance(value, str):
         if attribute == "prim_path":
             key = scene_map.get("robot")
@@ -125,7 +126,8 @@ def _rewrite(value, scene_map, action_map, location, instance_key, attribute="")
         return value
     if is_dataclass(value) and not isinstance(value, type):
         if isinstance(value, FrameTransformerCfg.FrameCfg):
-            value.name = f"{instance_key}_{value.name}"
+            target_name = value.name or value.prim_path.rstrip("/").rsplit("/", 1)[-1]
+            value.name = f"{instance_key}_{target_name}"
         if hasattr(value, "func") and hasattr(value, "params"):
             _validate_callable(value.func, value.params, scene_map, action_map, location)
         for field in fields(value):
@@ -150,6 +152,7 @@ def _rewrite(value, scene_map, action_map, location, instance_key, attribute="")
 
 
 def _rewrite_pose_writes(value, scene_map):
+    """Rewrite the scene keys nested in placement pose writes."""
     if isinstance(value, str):
         return scene_map.get(value, value)
     if isinstance(value, (list, tuple)):
@@ -158,6 +161,7 @@ def _rewrite_pose_writes(value, scene_map):
 
 
 def _validate_callable(func, params, scene_map, action_map, location):
+    """Reject implicit entity defaults and literal scene or action lookups."""
     assert not isinstance(func, str), f"{location}: keyed terms require a callable, not a string reference"
     callable_body = func.__call__ if inspect.isclass(func) else inspect.unwrap(func)
     try:
@@ -191,6 +195,7 @@ def _validate_callable(func, params, scene_map, action_map, location):
 
 
 def _assert_no_old_references(value, scene_map, location):
+    """Reject stale entity names after rewriting a configuration."""
     if isinstance(value, str):
         assert value not in scene_map, f"{location}: unrenamed scene reference '{value}'"
     elif isinstance(value, SceneEntityCfg):

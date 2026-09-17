@@ -45,6 +45,10 @@ def _test_instance_configurations(simulation_app):
     assert not hasattr(left.get_observation_cfg(), "left_camera_obs")
     assert camera_group.left_wrist_cam_rgb.params["sensor_cfg"].name == "left_wrist_cam"
     assert left.get_scene_cfg().left_wrist_cam.prim_path.startswith("{ENV_REGEX_NS}/Left/")
+    unnamed = FrankaJointPosEmbodiment(instance_key="unnamed")
+    unnamed.scene_config.ee_frame.target_frames[0].name = None
+    implicit_target = unnamed.scene_config.ee_frame.target_frames[0].prim_path.rsplit("/", 1)[-1]
+    assert unnamed.get_scene_cfg().unnamed_ee_frame.target_frames[0].name == f"unnamed_{implicit_target}"
     original_frames = [frame.name for frame in original.get_scene_cfg().ee_frame.target_frames]
     assert len(original_frames) == 3
     for robot, key in ((left, "left"), (right, "right")):
