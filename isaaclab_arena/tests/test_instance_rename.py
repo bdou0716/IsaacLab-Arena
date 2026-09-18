@@ -126,6 +126,43 @@ def test_instance_configurations():
     assert run_function_with_persistent_simulation_app(_test_instance_configurations)
 
 
+def _test_named_robot_modes(simulation_app):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import pytest
+
+    from isaaclab_arena.assets.registries import DeviceRegistry, RetargeterRegistry
+    from isaaclab_arena.embodiments.franka.franka import FrankaJointPosEmbodiment
+    from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
+    from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
+    from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
+    from isaaclab_arena.scene.scene import Scene
+
+    robot = FrankaJointPosEmbodiment(instance_key="left")
+    device = SimpleNamespace(name="keyboard", get_device_cfg=lambda **kwargs: kwargs)
+    converter = SimpleNamespace(get_pipeline_builder=lambda embodiment: embodiment)
+    with patch.object(RetargeterRegistry, "get_component_by_name", return_value=lambda: converter) as lookup:
+        config = DeviceRegistry().get_teleop_device_cfg(device, robot)
+    lookup.assert_called_once_with(RetargeterRegistry().convert_tuple_to_str(("keyboard", "franka_joint_pos")))
+    assert config["embodiment"] is robot
+    assert config["pipeline_builder"] is robot
+
+    for mode in ("mimic", "teleop", "xr"):
+        definition = IsaacLabArenaEnvironment("named_robot_mode", Scene(assets=[]), embodiment=robot)
+        definition.teleop_device = device if mode == "teleop" else None
+        builder = ArenaEnvBuilder(definition, ArenaEnvBuilderCfg(mimic=mode == "mimic", solve_relations=False))
+        with patch("isaaclab_arena.environments.arena_env_builder.get_settings_manager") as settings:
+            settings.return_value.get.return_value = mode == "xr"
+            with pytest.raises(AssertionError, match="require an unnamed embodiment"):
+                builder.compose_manager_cfg()
+    return True
+
+
+def test_named_robot_type_lookup_and_mode_validation():
+    assert run_function_with_persistent_simulation_app(_test_named_robot_modes)
+
+
 def _test_keyed_franka_steps(simulation_app):
     import torch
 

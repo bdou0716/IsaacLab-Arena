@@ -9,6 +9,7 @@ import datetime
 import gymnasium as gym
 from typing import Any
 
+from isaaclab.app.settings_manager import get_settings_manager
 from isaaclab.devices.device_base import DeviceCfg, DevicesCfg
 from isaaclab.envs import ManagerBasedRLMimicEnv
 from isaaclab.envs.manager_based_env import ManagerBasedEnv
@@ -224,6 +225,15 @@ class ArenaEnvBuilder:
         Returns:
             An (env_cfg, env_kwargs) tuple.
         """
+        if (
+            self.cfg.mimic
+            or self.arena_env.teleop_device is not None
+            or get_settings_manager().get("/isaaclab/xr/enabled", False)
+        ):
+            assert (
+                self.arena_env.embodiment is None or self.arena_env.embodiment.instance_key is None
+            ), "Mimic, teleoperation, and XR require an unnamed embodiment"
+
         # Solve relations before building scene config so positions are captured correctly.
         if self.cfg.solve_relations:
             self._solve_relations()
