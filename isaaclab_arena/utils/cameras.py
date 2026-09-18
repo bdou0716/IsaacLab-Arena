@@ -17,7 +17,11 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import CameraCfg, TiledCameraCfg  # noqa: F401
 
 from isaaclab_arena.assets.asset import Asset
-from isaaclab_arena.utils.configclass import combine_configclass_instances, make_configclass
+from isaaclab_arena.utils.configclass import (
+    combine_configclass_instances,
+    make_configclass,
+    transform_configclass_instance,
+)
 from isaaclab_arena.utils.pose import Pose, PosePerEnv, PoseRange
 
 
@@ -201,22 +205,18 @@ def combine_observation_cfgs(*configs: Any) -> Any:
     camera_groups = [cfg.camera_obs for cfg in configs if getattr(cfg, "camera_obs", None) is not None]
     if len(camera_groups) <= 1:
         return combine_configclass_instances("ObservationCfg", *configs)
-    groups = []
     camera_terms = []
     settings = {field.name: getattr(camera_groups[0], field.name) for field in fields(ObsGroup)}
-    for cfg in configs:
-        for field in fields(cfg):
-            value = getattr(cfg, field.name)
-            if field.name != "camera_obs":
-                groups.append((field.name, field.type, value))
-                continue
-            if value is None:
-                continue
-            for setting, expected in settings.items():
-                assert getattr(value, setting) == expected, f"Camera groups disagree on '{setting}'"
-            camera_terms.extend(
-                (term.name, term.type, getattr(value, term.name)) for term in fields(value) if term.name not in settings
-            )
+    for group in camera_groups:
+        for setting, expected in settings.items():
+            assert getattr(group, setting) == expected, f"Camera groups disagree on '{setting}'"
+        camera_terms.extend(
+            (term.name, term.type, getattr(group, term.name)) for term in fields(group) if term.name not in settings
+        )
     camera_cfg = make_configclass("CombinedCameraObsCfg", camera_terms, bases=(ObsGroup,))(**settings)
-    groups.append(("camera_obs", type(camera_cfg), camera_cfg))
-    return make_configclass("ObservationCfg", groups)()
+    ordinary_cfgs = [
+        transform_configclass_instance(cfg, lambda entries: [entry for entry in entries if entry[0] != "camera_obs"])
+        for cfg in configs
+    ]
+    cameras = make_configclass("CameraObservationsCfg", [("camera_obs", type(camera_cfg), camera_cfg)])()
+    return combine_configclass_instances("ObservationCfg", *ordinary_cfgs, cameras)

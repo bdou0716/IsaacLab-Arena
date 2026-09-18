@@ -230,7 +230,7 @@ def _test_invalid_compositions(simulation_app):
         "isaaclab_arena.environments.arena_env_builder.get_settings_manager",
         return_value=SimpleNamespace(get=lambda *args: True),
     ):
-        with pytest.raises(AssertionError, match="XR requires exactly one"):
+        with pytest.raises(AssertionError, match="XR require exactly one"):
             ArenaEnvBuilder(definition, ArenaEnvBuilderCfg()).compose_manager_cfg()
     definition.embodiments.append(definition.embodiments[0])
     with pytest.raises(AssertionError, match="unique"):
@@ -244,3 +244,45 @@ def _test_invalid_compositions(simulation_app):
 
 def test_invalid_compositions_fail_before_building():
     assert run_function_with_persistent_simulation_app(_test_invalid_compositions)
+
+
+def _test_observation_precedence(simulation_app):
+    from isaaclab.managers import ObservationGroupCfg, ObservationTermCfg
+
+    from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
+    from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
+    from isaaclab_arena.utils.cameras import combine_observation_cfgs
+    from isaaclab_arena.utils.configclass import make_configclass
+
+    ordinary_type = make_configclass("PolicyObservations", [("value", int, 1)], bases=(ObservationGroupCfg,))
+    base = make_configclass("RobotObservations", [("policy", ordinary_type, ordinary_type())])()
+    override = make_configclass("TaskObservations", [("policy", ordinary_type, ordinary_type(value=2))])()
+    cameras = []
+    for name in ("left_image", "right_image"):
+        group = make_configclass(
+            "CameraGroup",
+            [(name, ObservationTermCfg, ObservationTermCfg(func=lambda env: None))],
+            bases=(ObservationGroupCfg,),
+        )()
+        cameras.append(make_configclass("Cameras", [("camera_obs", type(group), group)])())
+    for count in range(3):
+        combined = combine_observation_cfgs(base, *cameras[:count], override)
+        assert combined.policy.value == 2
+        assert base.policy.value == 1
+        definition = make_two_robot_definition()
+        for index, robot in enumerate(definition.embodiments):
+            robot_observations = combine_observation_cfgs(base, cameras[index] if index < count else None)
+            robot.get_observation_cfg = lambda cfg=robot_observations: cfg
+        assert (
+            sum(
+                getattr(robot.get_observation_cfg(), "camera_obs", None) is not None for robot in definition.embodiments
+            )
+            == count
+        )
+        with pytest.raises(AssertionError, match="duplicate observation groups"):
+            ArenaEnvBuilder(definition, ArenaEnvBuilderCfg(solve_relations=False)).compose_manager_cfg()
+    return True
+
+
+def test_observation_overrides_do_not_depend_on_camera_count():
+    assert run_function_with_persistent_simulation_app(_test_observation_precedence)
