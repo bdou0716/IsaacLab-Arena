@@ -452,9 +452,11 @@ class ProgressTracker:
     @staticmethod
     def _managed_predicate_ids(runners: list[ProgressObjectiveRunner]) -> set[int]:
         """Identify managed callables whose counters cannot be shared across objective roles."""
-        return managed_predicate_ids(
-            predicate for runner in runners for chain in runner.predicate_chains.values() for predicate, _ in chain
-        )
+        predicates = []
+        for runner in runners:
+            for chain in runner.predicate_chains.values():
+                predicates.extend(predicate for predicate, _ in chain)
+        return managed_predicate_ids(predicates)
 
     @staticmethod
     def _group_runners_by_subtask(runners: list[ProgressObjectiveRunner]) -> list[list[ProgressObjectiveRunner]]:
