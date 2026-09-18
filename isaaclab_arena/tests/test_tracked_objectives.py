@@ -229,10 +229,14 @@ def _test_shared_managed_instance_is_rejected_across_roles(simulation_app):
     shared = partial(ConsecutiveEvent(cfg, env), consecutive_steps=2)
 
     def composite(child):
-        composite_cfg = TerminationTermCfg(
-            func=CompositePredicate, params={"predicates": [TerminationTermCfg(func=child)]}
-        )
-        return partial(CompositePredicate(composite_cfg, env), **composite_cfg.params)
+        # Assign after config construction to deliberately share the runtime child.
+        child_cfg = TerminationTermCfg(func=child)
+        child_cfg.func = child
+        composite_cfg = TerminationTermCfg(func=CompositePredicate)
+        composite_cfg.params["predicates"] = [child_cfg]
+        instance = CompositePredicate(composite_cfg, env)
+        assert instance.predicates[0].func is child
+        return partial(instance, **composite_cfg.params)
 
     for success_predicate, tracked_predicate in (
         (shared, shared),
