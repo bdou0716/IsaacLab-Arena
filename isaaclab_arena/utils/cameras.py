@@ -214,9 +214,11 @@ def combine_observation_cfgs(*configs: Any) -> Any:
             (term.name, term.type, getattr(group, term.name)) for term in fields(group) if term.name not in settings
         )
     camera_cfg = make_configclass("CombinedCameraObsCfg", camera_terms, bases=(ObsGroup,))(**settings)
-    ordinary_cfgs = [
-        transform_configclass_instance(cfg, lambda entries: [entry for entry in entries if entry[0] != "camera_obs"])
-        for cfg in configs
-    ]
+    ordinary_cfgs = []
+    for cfg in configs:
+        ordinary_cfg = transform_configclass_instance(
+            cfg, lambda entries: [entry for entry in entries if entry[0] != "camera_obs"]
+        )
+        ordinary_cfgs.append(ordinary_cfg)
     cameras = make_configclass("CameraObservationsCfg", [("camera_obs", type(camera_cfg), camera_cfg)])()
     return combine_configclass_instances("ObservationCfg", *ordinary_cfgs, cameras)
