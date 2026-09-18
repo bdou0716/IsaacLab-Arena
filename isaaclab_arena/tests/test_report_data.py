@@ -270,6 +270,9 @@ def test_conflicting_subtask_sequences_stay_split_and_report_an_issue(second_gro
         ["first_predicate"],
         ["other_predicate"],
     ]
+    normalized_events = job._progress_episodes[episode.identity].record["progress"]["events"]
+    assert normalized_events[0]["group"] is None
+    assert normalized_events[1]["group"] == second_group
 
 
 def test_unknown_active_predicates_are_renderable_without_inventing_sequence_indices():

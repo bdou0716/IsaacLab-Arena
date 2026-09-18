@@ -159,8 +159,7 @@ class JobSummary:
     _progress_episodes: dict[EpisodeIdentity, EpisodeSummary] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        candidate_families = {name: _candidate_family_name(name) for name in _objective_names(self.episodes)}
-        self._progress_episodes, group_issues = _normalize_progress_groups(self.name, self.episodes, candidate_families)
+        self._progress_episodes, group_issues = _normalize_progress_groups(self.name, self.episodes)
         progress_episodes = list(self._progress_episodes.values())
         self._objective_family_by_name, family_issues = _build_objective_family_map(self.name, progress_episodes)
         self._family_sequences, sequence_issues = _build_family_sequences(
@@ -463,7 +462,12 @@ def _objective_names_are_compatible(episodes: list[EpisodeSummary], objective_na
             index = _as_int(event.get("predicate_index"))
             if objective_name in objective_name_set and index is not None:
                 names_by_index[(_event_group(event), index)].add(_base_predicate_name(event.get("predicate_name", "")))
-    return all(len(names) <= 1 for names in names_by_index.values())
+    for (_, index), names in names_by_index.items():
+        # An unattributed event could belong to any named group at this index.
+        possible_names = names | names_by_index.get((None, index), set())
+        if len(possible_names) > 1:
+            return False
+    return True
 
 
 def _progress(record: dict[str, Any]) -> dict[str, Any]:
@@ -516,14 +520,13 @@ def _group_label(group: _Group) -> str:
 
 
 def _normalize_progress_groups(
-    job_name: str, episodes: list[EpisodeSummary], family_by_name: dict[str, str]
+    job_name: str, episodes: list[EpisodeSummary]
 ) -> tuple[dict[EpisodeIdentity, EpisodeSummary], list[DataIssue]]:
-    """Resolve historical missing groups once without modifying recorded episodes."""
+    """Resolve missing groups within exact objectives without modifying recorded episodes."""
     known_groups: dict[str, set[str]] = defaultdict(set)
     for episode in episodes:
         for name in _episode_objective_names(episode):
-            family = family_by_name.get(name, name)
-            known_groups[family].update(group for group in _objective_groups(episode.record, name) if group is not None)
+            known_groups[name].update(group for group in _objective_groups(episode.record, name) if group is not None)
 
     normalized = {}
     issues = []
@@ -538,7 +541,7 @@ def _normalize_progress_groups(
             recorded_events = [
                 event for event in _progress_events(episode.record) if _event_objective_name(event) == name
             ]
-            candidates = set(active) or known_groups[family_by_name.get(name, name)]
+            candidates = set(active) or known_groups[name]
             inferred_group = next(iter(candidates)) if len(candidates) == 1 else None
             needs_inference = any(_event_group(event) is None for event in recorded_events) or (
                 not recorded_events and not active
