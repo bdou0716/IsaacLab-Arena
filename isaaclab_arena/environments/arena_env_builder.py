@@ -269,10 +269,15 @@ class ArenaEnvBuilder:
         """
         self.arena_env.validate_embodiments()
         robot_count = len(self.arena_env.embodiments)
-        if self.cfg.mimic or self.arena_env.teleop_device is not None:
-            assert robot_count == 1, "Mimic and teleoperation require exactly one embodiment"
-        if get_settings_manager().get("/isaaclab/xr/enabled", False):
-            assert robot_count == 1, "XR requires exactly one embodiment"
+        if (
+            self.cfg.mimic
+            or self.arena_env.teleop_device is not None
+            or get_settings_manager().get("/isaaclab/xr/enabled", False)
+        ):
+            assert robot_count == 1, "Mimic, teleoperation, and XR require exactly one embodiment"
+            assert (
+                self.arena_env.embodiment.instance_key is None
+            ), "Mimic, teleoperation, and XR require an unnamed embodiment"
 
         # Solve relations before building scene config so positions are captured correctly.
         if self.cfg.solve_relations:

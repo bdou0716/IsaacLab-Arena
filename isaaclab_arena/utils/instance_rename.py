@@ -43,11 +43,17 @@ def scope_last_action(cfg: Any, action_names: tuple[str, ...]) -> Any:
         if not isinstance(group, ObservationGroupCfg):
             continue
         for term_field in fields(group):
-            term = getattr(group, term_field.name)
-            if isinstance(term, ObservationTermCfg) and term.func is mdp.last_action and not term.params:
-                term.func = robot_last_action
-                term.params = {"action_names": action_names}
+            _bind_last_action(getattr(group, term_field.name), action_names)
     return copied
+
+
+def _bind_last_action(term: Any, action_names: tuple[str, ...]) -> bool:
+    """Bind an unconfigured last-action observation to its robot's action terms."""
+    if isinstance(term, ObservationTermCfg) and term.func is mdp.last_action and not term.params:
+        term.func = robot_last_action
+        term.params = {"action_names": action_names}
+        return True
+    return False
 
 
 def rename_instance_cfg(
@@ -128,9 +134,7 @@ def _rewrite(value, scene_map, action_map, location, instance_key, attribute="")
     if isinstance(value, SceneEntityCfg):
         value.name = scene_map.get(value.name, value.name)
         return value
-    if isinstance(value, ObservationTermCfg) and value.func is mdp.last_action and not value.params:
-        value.func = robot_last_action
-        value.params = {"action_names": tuple(action_map.values())}
+    if _bind_last_action(value, tuple(action_map.values())):
         return value
     if is_dataclass(value) and not isinstance(value, type):
         if isinstance(value, FrameTransformerCfg.FrameCfg):
