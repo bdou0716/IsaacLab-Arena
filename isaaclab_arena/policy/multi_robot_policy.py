@@ -5,6 +5,8 @@
 
 """Batch robots sharing a registered policy and assemble their action columns."""
 
+from __future__ import annotations
+
 import gymnasium as gym
 import numpy as np
 import torch
@@ -27,6 +29,16 @@ class MultiRobotPolicyCfg(PolicyCfg):
 
     assignments: dict[str, str] = field(default_factory=dict)
     """Robot scene keys mapped to policy instance names."""
+
+
+@dataclass(frozen=True)
+class _PolicyBinding:
+    """Hold a fully validated mapping between one environment and its child policies."""
+
+    env: Any
+    num_envs: int
+    layouts: dict[str, list[tuple[str, slice]]]
+    views: dict[str, tuple[list[str], _RobotEnvView]]
 
 
 @register_policy
@@ -55,11 +67,9 @@ class MultiRobotPolicy(PolicyBase[MultiRobotPolicyCfg]):
                 self.policies[name] = policy_type(registry.get_policy_cfg_type(policy_type)(**params))
                 cleanup.callback(self.policies[name].close)
             cleanup.pop_all()
-        self._layouts = None
-        self._num_envs = None
-        self._env = None
+        self._binding: _PolicyBinding | None = None
 
-    def _bind(self, env):
+    def _bind(self, env) -> _PolicyBinding:
         """Resolve action columns and construct each inner policy's environment view."""
         manager = env.unwrapped.action_manager
         layouts = {key: [] for key in self.config.assignments}
@@ -72,33 +82,32 @@ class MultiRobotPolicy(PolicyBase[MultiRobotPolicyCfg]):
             column += width
         assert column == env.action_space.shape[-1], "Action manager widths must cover the action space"
         assert all(layouts.values()), "Every assigned robot must own at least one action term"
-        self._layouts = layouts
-        self._num_envs = env.unwrapped.num_envs
-        self._env = env
-        self._views = {}
+        views = {}
         for name in self.policies:
             keys = [key for key, assigned in self.config.assignments.items() if assigned == name]
             manager_view = _RobotActionManager(manager, keys, layouts)
-            self._views[name] = (keys, _RobotEnvView(env.unwrapped, manager_view, len(keys)))
+            views[name] = (keys, _RobotEnvView(env.unwrapped, manager_view, len(keys)))
+        return _PolicyBinding(env, env.unwrapped.num_envs, layouts, views)
 
     def get_action(self, env, observation):
         """Batch each policy's robot observations and scatter its returned actions."""
-        if self._layouts is None:
-            self._bind(env)
-        assert env is self._env, "Construct a new composite policy when the environment is rebuilt"
+        if self._binding is None:
+            self._binding = self._bind(env)
+        binding = self._binding
+        assert env is binding.env, "Construct a new composite policy when the environment is rebuilt"
         output = torch.empty(env.action_space.shape, device=env.unwrapped.device)
         for name, policy in self.policies.items():
-            keys, view = self._views[name]
+            keys, view = binding.views[name]
             robot_observations = [_robot_observation(observation, key, tuple(self.config.assignments)) for key in keys]
-            observations = _stack_observations(robot_observations, self._num_envs)
+            observations = _stack_observations(robot_observations, binding.num_envs)
             actions = policy.get_action(view, observations)
             expected = (view.num_envs, view.action_manager.total_action_dim)
             assert (
                 isinstance(actions, torch.Tensor) and tuple(actions.shape) == expected
             ), f"Policy '{name}' must return actions shaped {expected}"
-            for key, rows in zip(keys, actions.split(self._num_envs)):
+            for key, rows in zip(keys, actions.split(binding.num_envs)):
                 term_actions = rows.split(view.action_manager.action_term_dim, dim=-1)
-                for (_, columns), values in zip(self._layouts[key], term_actions):
+                for (_, columns), values in zip(binding.layouts[key], term_actions):
                     output[:, columns] = values
         return output
 
@@ -108,12 +117,13 @@ class MultiRobotPolicy(PolicyBase[MultiRobotPolicyCfg]):
             for policy in self.policies.values():
                 policy.reset(None)
             return
-        assert self._num_envs is not None, "Indexed reset requires the first action call to establish row counts"
+        binding = self._binding
+        assert binding is not None, "Indexed reset requires the first action call to establish row counts"
         assert env_ids.ndim == 1, "Reset indices must be a one-dimensional tensor"
-        assert bool(((env_ids >= 0) & (env_ids < self._num_envs)).all()), "Reset indices are out of range"
+        assert bool(((env_ids >= 0) & (env_ids < binding.num_envs)).all()), "Reset indices are out of range"
         for name, policy in self.policies.items():
-            count = len(self._views[name][0])
-            policy.reset(torch.cat([env_ids + index * self._num_envs for index in range(count)]))
+            count = len(binding.views[name][0])
+            policy.reset(torch.cat([env_ids + index * binding.num_envs for index in range(count)]))
 
     def set_task_description(self, task_description):
         """Send the mission description to every inner policy."""

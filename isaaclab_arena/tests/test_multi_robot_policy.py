@@ -230,6 +230,12 @@ def _test_policy_values(simulation_app):
     arms = RecordingPolicy(torch.cat([left, right]), 100)
     body = RecordingPolicy(humanoid, 500, remote=True)
     policy.policies = {"arms": arms, "humanoid": body}
+    single_space.low[2] = -999.0
+    for _ in range(2):
+        with pytest.raises(AssertionError, match="equal lower bounds"):
+            policy.get_action(env, observations)
+    assert arms.calls == body.calls == 0
+    single_space.low[2] = -1000.0
     expected = action + torch.tensor([100, 100, 100, 100, 500, 100, 100])
     torch.testing.assert_close(policy.get_action(env, observations), expected)
     torch.testing.assert_close(policy.get_action(env, observations), expected)

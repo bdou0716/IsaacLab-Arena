@@ -18,16 +18,18 @@ Verifies:
 
 from __future__ import annotations
 
+import gymnasium as gym
 import numpy as np
 import sys
 import torch
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
 
 from isaaclab_arena.assets.registries import PolicyRegistry
 from isaaclab_arena.policy import action_scheduling
+from isaaclab_arena.policy.multi_robot_policy import MultiRobotPolicy, MultiRobotPolicyCfg
 from isaaclab_arena_gr00t.policy import gr00t_remote_closedloop_policy as gr00t_policy
 from isaaclab_arena_gr00t.tests.utils.constants import TestConstants as Gr00tTestConstants
 
@@ -103,7 +105,8 @@ class _FakePolicyClient:
         self.last_observation = observation
         self.get_action_calls += 1
         # Match the real PolicyClient return signature: (action_dict, latency_or_meta).
-        return _make_action_response(NUM_ENVS, ACTION_HORIZON), None
+        num_envs = len(observation["language"]["annotation.human.task_description"])
+        return _make_action_response(num_envs, ACTION_HORIZON), None
 
     def reset(self):
         self.reset_called = True
@@ -141,6 +144,13 @@ def _build_policy(policy_config_yaml: str, scheduler: str = "chunk"):
     return gr00t_policy.Gr00tRemoteClosedloopPolicy(cfg)
 
 
+def _environment(num_envs=NUM_ENVS):
+    """Supply the runtime batch size consumed by the policy interface."""
+    env = SimpleNamespace(num_envs=num_envs)
+    env.unwrapped = env
+    return env
+
+
 # ------------------------------- tests ------------------------------- #
 
 
@@ -161,7 +171,7 @@ def test_observation_sent_to_server_has_expected_structure(
     policy = _build_policy(policy_config_yaml)
     policy.set_task_description("pick up the brown box")
 
-    policy._get_action_chunk(synthetic_observation, ["robot_head_cam_rgb"])
+    policy.get_action(_environment(), synthetic_observation)
 
     assert len(clients) == 1
     sent = clients[0].last_observation
@@ -197,6 +207,7 @@ def test_action_response_is_translated_to_correct_tensor_shape(
     policy = _build_policy(policy_config_yaml)
     policy.set_task_description("pick up the brown box")
 
+    policy.get_action(_environment(), synthetic_observation)
     action = policy._get_action_chunk(synthetic_observation, ["robot_head_cam_rgb"])
 
     assert isinstance(action, torch.Tensor)
@@ -220,7 +231,7 @@ def test_construction_fails_when_server_unreachable(policy_config_yaml, fake_cli
         _build_policy(policy_config_yaml)
 
 
-def test_registration_builds_typed_config_and_scheduler(policy_config_yaml, fake_client_factory):
+def test_registration_builds_typed_config_and_scheduler(policy_config_yaml, synthetic_observation, fake_client_factory):
     """The registered typed config retains scheduler selection."""
     fake_client_factory(ping_ok=True)
     assert (
@@ -239,6 +250,9 @@ def test_registration_builds_typed_config_and_scheduler(policy_config_yaml, fake
     )
 
     assert isinstance(policy.config, gr00t_policy.Gr00tRemoteClosedloopPolicyCfg)
+    assert policy._chunking_state is None
+    policy.set_task_description("pick up the brown box")
+    policy.get_action(_environment(), synthetic_observation)
     assert isinstance(policy._chunking_state, action_scheduling.SyncedBatchActionScheduler)
 
 
@@ -256,11 +270,11 @@ def test_get_action_returns_correct_shape_for_each_scheduler(
 
     fake_client_factory(ping_ok=True)
     policy = _build_policy(policy_config_yaml, scheduler=scheduler)
-    assert isinstance(policy._chunking_state, scheduler_cls)
     policy.set_task_description("pick up the brown box")
 
-    action = policy.get_action(env=None, observation=synthetic_observation)
+    action = policy.get_action(env=_environment(), observation=synthetic_observation)
 
+    assert isinstance(policy._chunking_state, scheduler_cls)
     assert isinstance(action, torch.Tensor)
     assert action.shape == (NUM_ENVS, EXPECTED_ACTION_DIM)
     assert action.device.type == "cpu"
@@ -276,14 +290,69 @@ def test_synced_batch_holds_joint_position_for_env_after_partial_reset(
     policy.set_task_description("pick up the brown box")
 
     # Step 1: every env needs a chunk → exactly one fetch.
-    policy.get_action(env=None, observation=synthetic_observation)
+    policy.get_action(env=_environment(), observation=synthetic_observation)
     assert clients[0].get_action_calls == 1
 
     # Reset env 1 only; env 0 still has its chunk.
     policy.reset(env_ids=torch.tensor([1]))
 
-    action = policy.get_action(env=None, observation=synthetic_observation)
+    action = policy.get_action(env=_environment(), observation=synthetic_observation)
     # No new chunk fetched (env 0 not yet exhausted, so .all() is False).
     assert clients[0].get_action_calls == 1
     expected_hold = policy._extract_hold_action(synthetic_observation)
     torch.testing.assert_close(action[1], expected_hold[1])
+
+
+def test_shared_policy_sizes_remote_state_from_its_robot_batch(
+    policy_config_yaml, synthetic_observation, fake_client_factory
+):
+    """Two robots share one controller without repeating their batch size in configuration."""
+    clients = fake_client_factory(ping_ok=True)
+    policy = MultiRobotPolicy(
+        MultiRobotPolicyCfg(
+            policies={
+                "shared": {
+                    "type": "gr00t_remote_closedloop",
+                    "params": {
+                        "policy_config_yaml_path": policy_config_yaml,
+                        "policy_device": "cpu",
+                        "remote_host": "unused",
+                        "remote_port": 0,
+                    },
+                }
+            },
+            assignments={"left": "shared", "right": "shared"},
+        )
+    )
+    env = _environment()
+    env.device = "cpu"
+    env.single_action_space = gym.spaces.Box(-1.0, 1.0, (2 * EXPECTED_ACTION_DIM,))
+    env.action_space = gym.vector.utils.batch_space(env.single_action_space, NUM_ENVS)
+    terms = {f"{key}_action": SimpleNamespace(cfg=SimpleNamespace(asset_name=key)) for key in ("left", "right")}
+    env.action_manager = SimpleNamespace(
+        active_terms=list(terms),
+        action_term_dim=[EXPECTED_ACTION_DIM, EXPECTED_ACTION_DIM],
+        get_term=terms.__getitem__,
+    )
+    observations = {f"{key}_policy": synthetic_observation["policy"] for key in ("left", "right")}
+    observations["camera_obs"] = {
+        f"{key}_robot_head_cam_rgb": synthetic_observation["camera_obs"]["robot_head_cam_rgb"]
+        for key in ("left", "right")
+    }
+    child = policy.policies["shared"]
+    try:
+        policy.set_task_description("pick up the brown box")
+        policy.reset()
+        assert clients[0].reset_called
+        action = policy.get_action(env, observations)
+        assert action.shape == (NUM_ENVS, 2 * EXPECTED_ACTION_DIM)
+        assert child.num_envs == 2 * NUM_ENVS
+        assert clients[0].get_action_calls == 1
+        policy.reset(torch.tensor([1]))
+        assert policy.get_action(env, observations).shape == action.shape
+        with pytest.raises(AssertionError, match="batch size changes"):
+            child.get_action(_environment(1), synthetic_observation)
+    finally:
+        policy.close()
+    with pytest.raises(AssertionError, match="closed"):
+        child.get_action(_environment(2 * NUM_ENVS), synthetic_observation)

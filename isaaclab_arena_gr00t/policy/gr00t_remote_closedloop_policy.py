@@ -56,7 +56,7 @@ class Gr00tRemoteClosedloopPolicyCfg(Gr00tBasePolicyCfg):
     """
 
     num_envs: int = 1
-    """Number of parallel environments served by the policy."""
+    """Legacy saved setting. Runtime batch size comes from the supplied environment."""
 
     remote_host: str = "localhost"
     """GR00T policy server hostname."""
@@ -84,14 +84,14 @@ class Gr00tRemoteClosedloopPolicy(PolicyBase[Gr00tRemoteClosedloopPolicyCfg]):
     def __init__(self, config: Gr00tRemoteClosedloopPolicyCfg):
         super().__init__(config)
 
-        action_scheduler_cls = ActionSchedulerType(config.scheduler).get_scheduler_cls()
+        self._action_scheduler_cls = ActionSchedulerType(config.scheduler).get_scheduler_cls()
 
         # Policy config (for obs/action translation — no model loading)
         # TODO(xinjieyao, 2026-04-27): to be refactored
         self.policy_config: Gr00tClosedloopPolicyCfg = create_config_from_yaml(
             config.policy_config_yaml_path, Gr00tClosedloopPolicyCfg
         )
-        self.num_envs = config.num_envs
+        self.num_envs: int | None = None
         self.device = config.policy_device
         self.task_mode = TaskMode(self.policy_config.task_mode_name)
 
@@ -111,14 +111,7 @@ class Gr00tRemoteClosedloopPolicy(PolicyBase[Gr00tRemoteClosedloopPolicyCfg]):
         self.action_dim = compute_action_dim(self.task_mode, self.robot_action_joints_config)
         self.action_chunk_length = self.policy_config.action_chunk_length
 
-        self._chunking_state: ActionScheduler | None = action_scheduler_cls(
-            num_envs=self.num_envs,
-            action_chunk_length=self.action_chunk_length,
-            action_horizon=self.policy_config.action_horizon,
-            action_dim=self.action_dim,
-            device=self.device,
-            dtype=torch.float,
-        )
+        self._chunking_state: ActionScheduler | None = None
 
         # Connect to GR00T's native PolicyClient
         from gr00t.policy.server_client import PolicyClient
@@ -149,7 +142,8 @@ class Gr00tRemoteClosedloopPolicy(PolicyBase[Gr00tRemoteClosedloopPolicyCfg]):
         return self.task_description
 
     def get_action(self, env: gym.Env, observation: dict[str, Any]) -> torch.Tensor:
-        assert self._chunking_state is not None, "GR00T remote policy has been closed"
+        assert self._client is not None, "GR00T remote policy has been closed"
+        self._maybe_init_per_env_state(env.unwrapped.num_envs)
 
         def fetch_chunk() -> torch.Tensor:
             return self._get_action_chunk(observation, self.policy_config.pov_cam_name_sim)
@@ -158,6 +152,20 @@ class Gr00tRemoteClosedloopPolicy(PolicyBase[Gr00tRemoteClosedloopPolicyCfg]):
             fetch_chunk,
             hold_action=self._extract_hold_action(observation),
         )
+
+    def _maybe_init_per_env_state(self, num_envs: int) -> None:
+        """Allocate scheduler state once using the actual robot batch size."""
+        if self._chunking_state is None:
+            self._chunking_state = self._action_scheduler_cls(
+                num_envs=num_envs,
+                action_chunk_length=self.action_chunk_length,
+                action_horizon=self.policy_config.action_horizon,
+                action_dim=self.action_dim,
+                device=self.device,
+                dtype=torch.float,
+            )
+            self.num_envs = num_envs
+        assert self.num_envs == num_envs, "Recreate the policy when the environment batch size changes"
 
     def _extract_hold_action(self, observation: dict[str, Any]) -> torch.Tensor:
         """Build the action vector that waiting envs should hold: their current sim joint positions
@@ -214,9 +222,9 @@ class Gr00tRemoteClosedloopPolicy(PolicyBase[Gr00tRemoteClosedloopPolicyCfg]):
         if env_ids is None:
             env_ids = slice(None)
         assert self._client is not None, "GR00T remote policy has been closed"
-        assert self._chunking_state is not None, "GR00T remote policy has been closed"
         self._client.reset()
-        self._chunking_state.reset(env_ids)
+        if self._chunking_state is not None:
+            self._chunking_state.reset(env_ids)
 
     def close(self) -> None:
         """Release Arena-side resources for the remote GR00T policy client."""
