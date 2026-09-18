@@ -17,7 +17,7 @@ from isaaclab.utils.configclass import configclass
 
 from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective, ProgressObjectiveCompletionMode
 from isaaclab_arena.progress_tracking.progress_tracking_utils import DEFAULT_GROUP_NAME, _predicate_repr
-from isaaclab_arena.tasks.predicates.composite import reset_managed_predicates
+from isaaclab_arena.tasks.predicates.composite import managed_predicate_ids, reset_managed_predicates
 from isaaclab_arena.tasks.predicates.consecutive import ConsecutivePredicate
 
 
@@ -452,15 +452,9 @@ class ProgressTracker:
     @staticmethod
     def _managed_predicate_ids(runners: list[ProgressObjectiveRunner]) -> set[int]:
         """Identify managed callables whose counters cannot be shared across objective roles."""
-        managed_ids = set()
-        for runner in runners:
-            for chain in runner.predicate_chains.values():
-                for predicate, _ in chain:
-                    while isinstance(predicate, functools.partial):
-                        predicate = predicate.func
-                    if isinstance(predicate, ManagerTermBase):
-                        managed_ids.add(id(predicate))
-        return managed_ids
+        return managed_predicate_ids(
+            predicate for runner in runners for chain in runner.predicate_chains.values() for predicate, _ in chain
+        )
 
     @staticmethod
     def _group_runners_by_subtask(runners: list[ProgressObjectiveRunner]) -> list[list[ProgressObjectiveRunner]]:

@@ -215,6 +215,7 @@ def _test_shared_managed_instance_is_rejected_across_roles(simulation_app):
 
     from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
     from isaaclab_arena.progress_tracking.progress_tracker import ProgressTracker
+    from isaaclab_arena.tasks.predicates.composite import CompositePredicate
     from isaaclab_arena.tasks.predicates.consecutive import ConsecutivePredicate
 
     class ConsecutiveEvent(ConsecutivePredicate):
@@ -226,12 +227,26 @@ def _test_shared_managed_instance_is_rejected_across_roles(simulation_app):
     env, _, _ = _make_environment_and_manager(["gate", "shared"])
     cfg = TerminationTermCfg(func=ConsecutiveEvent, params={"consecutive_steps": 2})
     shared = partial(ConsecutiveEvent(cfg, env), consecutive_steps=2)
-    success = ProgressObjective(
-        name="success", predicate_sequence=[partial(_controlled_predicate, predicate_name="gate"), shared]
-    )
-    tracked = ProgressObjective(name="tracked", predicate_sequence=[shared])
-    with pytest.raises(AssertionError, match="must not share managed predicate instances"):
-        ProgressTracker([success], 2, "cpu", env=env, tracked_objectives=[tracked])
+
+    def composite(child):
+        composite_cfg = TerminationTermCfg(
+            func=CompositePredicate, params={"predicates": [TerminationTermCfg(func=child)]}
+        )
+        return partial(CompositePredicate(composite_cfg, env), **composite_cfg.params)
+
+    for success_predicate, tracked_predicate in (
+        (shared, shared),
+        (composite(shared), shared),
+        (composite(composite(shared)), shared),
+        (composite(shared), composite(shared)),
+    ):
+        success = ProgressObjective(
+            name="success",
+            predicate_sequence=[partial(_controlled_predicate, predicate_name="gate"), success_predicate],
+        )
+        tracked = ProgressObjective(name="tracked", predicate_sequence=[tracked_predicate])
+        with pytest.raises(AssertionError, match="must not share managed predicate instances"):
+            ProgressTracker([success], 2, "cpu", env=env, tracked_objectives=[tracked])
 
     # Reusing a configuration gives each role its own counter.
     success = ProgressObjective(
