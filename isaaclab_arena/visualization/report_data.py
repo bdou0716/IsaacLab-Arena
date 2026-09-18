@@ -15,7 +15,7 @@ import functools
 import pathlib
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from isaaclab_arena.visualization.episode_results_files import (
@@ -36,6 +36,7 @@ _METADATA_EXCLUDED_FIELDS = frozenset({"env_id", "episode_in_env", "success", "j
 _PREDICATE_ARGUMENTS_PATTERN = re.compile(r"\(.*\)$")
 _SUBTASK_OBJECTIVE_PATTERN = re.compile(r"^subtask_\d+/(?P<family>.+)$")
 UNGROUPED_TASK = "(ungrouped)"
+_Group = str | None
 
 
 @dataclass(frozen=True)
@@ -154,22 +155,19 @@ class JobSummary:
     issues: list[DataIssue] = field(default_factory=list)
 
     _objective_family_by_name: dict[str, str] = field(init=False, repr=False)
-    _family_sequences: dict[tuple[str, str], dict[int, str]] = field(init=False, repr=False)
-
-    def _groups_for(self, episode: EpisodeSummary, objective_name: str) -> set[str]:
-        groups = _objective_groups(episode.record, objective_name)
-        family = self._objective_family_by_name.get(objective_name, objective_name)
-        known_groups = {group for known_family, group in self._family_sequences if known_family == family}
-        if known_groups == {""}:
-            return {""}
-        return groups
+    _family_sequences: dict[tuple[str, _Group], dict[int, str]] = field(init=False, repr=False)
+    _progress_episodes: dict[EpisodeIdentity, EpisodeSummary] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._objective_family_by_name, family_issues = _build_objective_family_map(self.name, self.episodes)
+        candidate_families = {name: _candidate_family_name(name) for name in _objective_names(self.episodes)}
+        self._progress_episodes, group_issues = _normalize_progress_groups(self.name, self.episodes, candidate_families)
+        progress_episodes = list(self._progress_episodes.values())
+        self._objective_family_by_name, family_issues = _build_objective_family_map(self.name, progress_episodes)
         self._family_sequences, sequence_issues = _build_family_sequences(
-            self.name, self.episodes, self._objective_family_by_name
+            self.name, progress_episodes, self._objective_family_by_name
         )
         self.issues.extend(family_issues)
+        self.issues.extend(group_issues)
         self.issues.extend(sequence_issues)
 
     @property
@@ -204,13 +202,13 @@ class JobSummary:
 
     @functools.cached_property
     def funnels(self) -> list[ObjectiveFunnel]:
-        instances_by_group: dict[tuple[str, str], set[tuple[EpisodeIdentity, str]]] = defaultdict(set)
-        reached_by_group_index: dict[tuple[str, str, int], set[tuple[EpisodeIdentity, str]]] = defaultdict(set)
-        for episode in self.episodes:
+        instances_by_group: dict[tuple[str, _Group], set[tuple[EpisodeIdentity, str]]] = defaultdict(set)
+        reached_by_group_index: dict[tuple[str, _Group, int], set[tuple[EpisodeIdentity, str]]] = defaultdict(set)
+        for episode in self._progress_episodes.values():
             for objective_name in _episode_objective_names(episode):
                 family = self._objective_family_by_name.get(objective_name, objective_name)
                 instance = (episode.identity, objective_name)
-                for group in self._groups_for(episode, objective_name):
+                for group in _objective_groups(episode.record, objective_name):
                     instances_by_group[(family, group)].add(instance)
             for event in _progress_events(episode.record):
                 objective_name = _event_objective_name(event)
@@ -223,7 +221,7 @@ class JobSummary:
                 reached_by_group_index[(family, group, index)].add(instance)
 
         funnels = []
-        for family, group in sorted(instances_by_group):
+        for family, group in sorted(instances_by_group, key=lambda key: (key[0], _group_sort_key(key[1]))):
             sequence = self._family_sequences.get((family, group), {})
             stages = [
                 FunnelStage(
@@ -232,7 +230,7 @@ class JobSummary:
                 for index in sorted(sequence)
             ]
             multiple_groups = sum(key[0] == family for key in instances_by_group) > 1
-            name = f"{family}/{group}" if multiple_groups else family
+            name = f"{family}/{_group_label(group)}" if multiple_groups else family
             funnels.append(
                 ObjectiveFunnel(
                     name=name,
@@ -244,30 +242,25 @@ class JobSummary:
         return funnels
 
     def objectives_for(self, episode: EpisodeSummary) -> list[ObjectiveProgress]:
+        episode = self._progress_episodes[episode.identity]
         objectives = _progress_objectives(episode.record)
-        names = list(objectives) if objectives else sorted(_event_objectives(episode.record))
         results = []
         fired = _events_by_objective_and_index(episode.record)
-        for name in names:
-            detail = objectives.get(name, {}) if objectives else {}
+        for name, detail in objectives.items():
             family = self._objective_family_by_name.get(name, name)
-            groups = self._groups_for(episode, name)
+            groups = _objective_groups(episode.record, name)
             active_by_group = detail.get("active_predicates") or {}
-            active_names = [_base_predicate_name(predicate) for predicate in active_by_group.values() if predicate]
             signals = []
-            matched_blocked: set[tuple[str, str]] = set()
-            for group in sorted(groups):
+            matched_blocked: set[tuple[_Group, str]] = set()
+            for group in sorted(groups, key=_group_sort_key):
                 sequence = self._family_sequences.get((family, group), {})
                 active_name = _base_predicate_name(active_by_group.get(group, ""))
-                # Older records omit the group on events. Preserve their single-group display.
-                if group == "" and len(active_names) == 1:
-                    active_name = active_names[0]
                 for index in sorted(sequence):
                     event = fired.get((name, group), {}).get(index)
                     blocked = event is None and sequence[index] == active_name
                     if blocked:
                         matched_blocked.add((group, sequence[index]))
-                    signal_name = f"{group}/{sequence[index]}" if len(groups) > 1 else sequence[index]
+                    signal_name = f"{_group_label(group)}/{sequence[index]}" if len(groups) > 1 else sequence[index]
                     signals.append(
                         PredicateSignal(
                             index=index,
@@ -288,9 +281,9 @@ class JobSummary:
                     is_complete=bool(detail.get("is_complete", False)) if isinstance(detail, dict) else False,
                     signals=signals,
                     blocked_predicates=[
-                        f"{group}/{predicate}" if len(groups) > 1 else predicate
+                        f"{_group_label(group)}/{predicate}" if len(groups) > 1 else predicate
                         for group, predicate in (
-                            ("" if groups == {""} else group, _base_predicate_name(predicate))
+                            (group, _base_predicate_name(predicate))
                             for group, predicate in active_by_group.items()
                             if predicate
                         )
@@ -434,8 +427,8 @@ def _build_family_sequences(
     job_name: str,
     episodes: list[EpisodeSummary],
     family_by_name: dict[str, str],
-) -> tuple[dict[tuple[str, str], dict[int, str]], list[DataIssue]]:
-    names_by_family_index: dict[tuple[str, str, int], set[str]] = defaultdict(set)
+) -> tuple[dict[tuple[str, _Group], dict[int, str]], list[DataIssue]]:
+    names_by_family_index: dict[tuple[str, _Group, int], set[str]] = defaultdict(set)
     for episode in episodes:
         for event in _progress_events(episode.record):
             objective_name = _event_objective_name(event)
@@ -448,7 +441,7 @@ def _build_family_sequences(
             )
 
     issues = []
-    sequences: dict[tuple[str, str], dict[int, str]] = defaultdict(dict)
+    sequences: dict[tuple[str, _Group], dict[int, str]] = defaultdict(dict)
     for (family, group, index), names in names_by_family_index.items():
         if len(names) > 1:
             issues.append(
@@ -462,7 +455,7 @@ def _build_family_sequences(
 
 
 def _objective_names_are_compatible(episodes: list[EpisodeSummary], objective_names: list[str]) -> bool:
-    names_by_index: dict[tuple[str, int], set[str]] = defaultdict(set)
+    names_by_index: dict[tuple[_Group, int], set[str]] = defaultdict(set)
     objective_name_set = set(objective_names)
     for episode in episodes:
         for event in _progress_events(episode.record):
@@ -508,24 +501,76 @@ def _objective_names(episodes: list[EpisodeSummary]) -> set[str]:
     return names
 
 
-def _event_group(event: dict[str, Any]) -> str:
-    return str(event.get("group") or "")
+def _event_group(event: dict[str, Any]) -> _Group:
+    """Keep missing attribution distinct from an explicitly empty group name."""
+    group = event.get("group")
+    return None if group is None else str(group)
 
 
-def _objective_groups(record: dict[str, Any], objective_name: str) -> set[str]:
+def _group_sort_key(group: _Group) -> tuple[bool, str]:
+    return group is not None, group or ""
+
+
+def _group_label(group: _Group) -> str:
+    return "(unattributed)" if group is None else group
+
+
+def _normalize_progress_groups(
+    job_name: str, episodes: list[EpisodeSummary], family_by_name: dict[str, str]
+) -> tuple[dict[EpisodeIdentity, EpisodeSummary], list[DataIssue]]:
+    """Resolve historical missing groups once without modifying recorded episodes."""
+    known_groups: dict[str, set[str]] = defaultdict(set)
+    for episode in episodes:
+        for name in _episode_objective_names(episode):
+            family = family_by_name.get(name, name)
+            known_groups[family].update(group for group in _objective_groups(episode.record, name) if group is not None)
+
+    normalized = {}
+    issues = []
+    for episode in episodes:
+        objectives = {}
+        events = []
+        objective_names = list(_progress_objectives(episode.record))
+        objective_names.extend(sorted(_event_objectives(episode.record) - set(objective_names)))
+        for name in objective_names:
+            detail = dict(_progress_objectives(episode.record).get(name, {}))
+            active = dict(detail.get("active_predicates") or {})
+            recorded_events = [
+                event for event in _progress_events(episode.record) if _event_objective_name(event) == name
+            ]
+            candidates = set(active) or known_groups[family_by_name.get(name, name)]
+            inferred_group = next(iter(candidates)) if len(candidates) == 1 else None
+            needs_inference = any(_event_group(event) is None for event in recorded_events) or (
+                not recorded_events and not active
+            )
+            if needs_inference and len(candidates) > 1:
+                issues.append(DataIssue(job_name or ".", f"objective '{name}' has ambiguous missing group attribution"))
+            events.extend(
+                {**event, "group": inferred_group if _event_group(event) is None else _event_group(event)}
+                for event in recorded_events
+            )
+            if not active and not recorded_events:
+                active[inferred_group] = None
+            objectives[name] = {**detail, "active_predicates": active}
+        record = {
+            **episode.record,
+            "progress": {**_progress(episode.record), "objectives": objectives, "events": events},
+        }
+        normalized[episode.identity] = replace(episode, record=record)
+    return normalized, issues
+
+
+def _objective_groups(record: dict[str, Any], objective_name: str) -> set[_Group]:
     """Find recorded groups, including groups that have not emitted an event."""
     event_groups = {
         _event_group(event) for event in _progress_events(record) if _event_objective_name(event) == objective_name
     }
     active_groups = set(_progress_objectives(record).get(objective_name, {}).get("active_predicates") or {})
-    # Records predating group attribution can only describe one combined sequence.
-    if event_groups == {""}:
-        return event_groups
-    return event_groups | active_groups or {""}
+    return event_groups | active_groups or {None}
 
 
-def _events_by_objective_and_index(record: dict[str, Any]) -> dict[tuple[str, str], dict[int, dict[str, Any]]]:
-    result: dict[tuple[str, str], dict[int, dict[str, Any]]] = {}
+def _events_by_objective_and_index(record: dict[str, Any]) -> dict[tuple[str, _Group], dict[int, dict[str, Any]]]:
+    result: dict[tuple[str, _Group], dict[int, dict[str, Any]]] = {}
     for event in _progress_events(record):
         objective_name = _event_objective_name(event)
         index = _as_int(event.get("predicate_index"))

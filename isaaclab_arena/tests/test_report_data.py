@@ -6,6 +6,9 @@
 """Test how recorded results are aggregated into the evaluation report data model."""
 
 import json
+from copy import deepcopy
+
+import pytest
 
 from isaaclab_arena.visualization.episode_results_files import format_episode_video_filename
 from isaaclab_arena.visualization.report_data import (
@@ -242,7 +245,8 @@ def test_one_named_group_preserves_funnel_and_signal_labels():
     assert [signal.name for signal in job.objectives_for(episode)[0].signals] == ["arrive"]
 
 
-def test_conflicting_subtask_sequences_stay_split_and_report_an_issue():
+@pytest.mark.parametrize("second_group", [None, "left"])
+def test_conflicting_subtask_sequences_stay_split_and_report_an_issue(second_group):
     episode = _episode({
         "progress": {
             "objectives": {
@@ -255,11 +259,17 @@ def test_conflicting_subtask_sequences_stay_split_and_report_an_issue():
             ],
         }
     })
+    if second_group is not None:
+        episode.record["progress"]["events"][1]["group"] = second_group
     job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[episode])
 
     assert any("conflicting predicate sequences" in issue.message for issue in job.issues)
     objectives = job.objectives_for(episode)
     assert [objective.family for objective in objectives] == ["subtask_0/pick", "subtask_1/pick"]
+    assert [[signal.name for signal in objective.signals] for objective in objectives] == [
+        ["first_predicate"],
+        ["other_predicate"],
+    ]
 
 
 def test_unknown_active_predicates_are_renderable_without_inventing_sequence_indices():
@@ -567,3 +577,64 @@ def test_waiting_predicates_keep_groups_when_only_one_has_a_known_sequence():
     objective = job.objectives_for(stalled)[0]
     assert [(signal.name, signal.blocked) for signal in objective.signals] == [("left/arrive", True)]
     assert objective.blocked_predicates == ["right/arrive"]
+
+
+def test_explicit_empty_group_preserves_an_eventless_sibling():
+    episode = _episode({
+        "progress": {
+            "objectives": {"reach": {"active_predicates": {"": None, "right": "arrive"}}},
+            "events": [{"objective": "reach", "group": "", "predicate_index": 0, "predicate_name": "arrive"}],
+        }
+    })
+    original = deepcopy(episode.record)
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[episode])
+
+    assert [(funnel.name, funnel.num_instances) for funnel in job.funnels] == [("reach/", 1), ("reach/right", 1)]
+    assert job.funnels[0].stages[0].num_reached == 1
+    assert job.funnels[1].stages == []
+    assert job.funnels[1].show_empty
+    assert job.objectives_for(episode)[0].blocked_predicates == ["right/arrive"]
+    assert episode.record == original
+
+
+def test_legacy_and_named_single_group_events_share_one_denominator():
+    legacy = _episode({"progress": _progress({"reach": 1}, [("reach", 0, "arrive")], 1.0)})
+    named = _episode(
+        {
+            "progress": {
+                "objectives": {"reach": {"active_predicates": {"left": None}}},
+                "events": [{"objective": "reach", "group": "left", "predicate_index": 0, "predicate_name": "arrive"}],
+            }
+        },
+        episode=1,
+    )
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[legacy, named])
+
+    assert len(job.funnels) == 1
+    assert job.funnels[0].num_instances == 2
+    assert job.funnels[0].stages[0].num_reached == 2
+    assert job.objectives_for(legacy)[0].signals[0].triggered
+    assert not job.issues
+
+
+def test_ambiguous_missing_group_is_reported_without_assigning_an_event():
+    episode = _episode({
+        "progress": {
+            "objectives": {"reach": {"active_predicates": {"": "arrive", "right": "arrive"}}},
+            "events": [{"objective": "reach", "predicate_index": 0, "predicate_name": "arrive"}],
+        }
+    })
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[episode])
+
+    assert any("ambiguous missing group attribution" in issue.message for issue in job.issues)
+    funnels = {funnel.name: funnel for funnel in job.funnels}
+    assert funnels["reach/(unattributed)"].stages[0].num_reached == 1
+    assert funnels["reach/"].stages == funnels["reach/right"].stages == []
+
+
+def test_group_normalization_preserves_recorded_objective_order():
+    names = [f"subtask_{index}/reach" for index in range(12)]
+    episode = _episode({"progress": _progress(dict.fromkeys(names, 1), [], 0.0)})
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[episode])
+
+    assert [objective.name for objective in job.objectives_for(episode)] == names
