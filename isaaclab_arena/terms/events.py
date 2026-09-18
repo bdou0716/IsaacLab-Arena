@@ -3,8 +3,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import torch
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 import warp as wp
@@ -402,6 +403,18 @@ def reset_placement_asset_pose_per_env(
         single_env = torch.tensor([cur_env], device=env.device)
         for scene_name, pose in write_pose_list[cur_env]:
             _write_scene_pose(env, scene_name, pose, single_env)
+
+
+def scope_articulation_resets(cfg: Any, asset_name: str) -> Any:
+    """Copy robot events and restrict whole-scene joint resets to their owning articulation."""
+    if cfg is None:
+        return None
+    scoped = copy.deepcopy(cfg)
+    for field in fields(scoped):
+        term = getattr(scoped, field.name)
+        if isinstance(term, EventTermCfg) and term.func is reset_all_articulation_joints:
+            term.params["asset_cfg"] = SceneEntityCfg(asset_name)
+    return scoped
 
 
 def reset_all_articulation_joints(env: ManagerBasedEnv, env_ids: torch.Tensor, asset_cfg: SceneEntityCfg | None = None):

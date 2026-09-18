@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import copy
 import datetime
 import gymnasium as gym
 import logging
@@ -16,7 +15,7 @@ from isaaclab.app.settings_manager import get_settings_manager
 from isaaclab.devices.device_base import DeviceCfg, DevicesCfg
 from isaaclab.envs import ManagerBasedRLMimicEnv
 from isaaclab.envs.manager_based_env import ManagerBasedEnv
-from isaaclab.managers import ActionTermCfg, EventTermCfg, SceneEntityCfg
+from isaaclab.managers import ActionTermCfg, EventTermCfg
 from isaaclab.managers.recorder_manager import RecorderManagerBaseCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab_newton.physics import NewtonCfg
@@ -50,7 +49,7 @@ from isaaclab_arena.relations.object_placer_params import ObjectPlacerParams
 from isaaclab_arena.relations.placement_events import PLACEMENT_RESET_EVENT_NAME
 from isaaclab_arena.relations.relation_solver_params import RelationSolverParams
 from isaaclab_arena.tasks.no_task import NoTask
-from isaaclab_arena.terms.events import ResetBackgroundPhysics, reset_all_articulation_joints
+from isaaclab_arena.terms.events import ResetBackgroundPhysics, scope_articulation_resets
 from isaaclab_arena.terms.recorders import (
     ArenaEnvRecorderManagerCfg,
     combine_embodiment_recorder_cfgs,
@@ -269,10 +268,15 @@ class ArenaEnvBuilder:
         """
         self.arena_env.validate_embodiments()
         robot_count = len(self.arena_env.embodiments)
-        if self.cfg.mimic or self.arena_env.teleop_device is not None:
-            assert robot_count == 1, "Mimic and teleoperation require exactly one embodiment"
-        if get_settings_manager().get("/isaaclab/xr/enabled", False):
-            assert robot_count == 1, "XR requires exactly one embodiment"
+        if (
+            self.cfg.mimic
+            or self.arena_env.teleop_device is not None
+            or get_settings_manager().get("/isaaclab/xr/enabled", False)
+        ):
+            assert robot_count == 1, "Mimic, teleoperation, and XR require exactly one embodiment"
+            assert (
+                self.arena_env.embodiment.instance_key is None
+            ), "Mimic, teleoperation, and XR require an unnamed embodiment"
 
         # Solve relations before building scene config so positions are captured correctly.
         if self.cfg.solve_relations:
@@ -302,12 +306,8 @@ class ArenaEnvBuilder:
             configs = []
             for robot in embodiments:
                 config = getattr(robot, getter)()
-                if robot_count > 1 and getter == "get_events_cfg" and config is not None:
-                    config = copy.deepcopy(config)
-                    for field in fields(config):
-                        term = getattr(config, field.name)
-                        if isinstance(term, EventTermCfg) and term.func is reset_all_articulation_joints:
-                            term.params["asset_cfg"] = SceneEntityCfg(robot.get_scene_key())
+                if robot_count > 1 and getter == "get_events_cfg":
+                    config = scope_articulation_resets(config, robot.get_scene_key())
                 configs.append(config)
             return _combine_robot_cfgs(getter, configs)
 
@@ -335,6 +335,8 @@ class ArenaEnvBuilder:
                 )
                 observations = scope_last_action(observations, action_names)
             robot_observations.append(observations)
+        duplicates = set(check_configclass_field_duplicates(*robot_observations)) - {"camera_obs"}
+        assert not duplicates, f"Robot configurations have duplicate observation groups: {sorted(duplicates)}"
         observation_cfg = combine_observation_cfgs(
             self.arena_env.scene.get_observation_cfg(),
             *robot_observations,
