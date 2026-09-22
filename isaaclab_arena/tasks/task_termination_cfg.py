@@ -31,7 +31,10 @@ class TaskTerminationCfg:
     """Optional final subtask conditions; None entries exclude that subtask from the success check."""
 
     tracked: list[ProgressObjective] = field(default_factory=list)
-    """Objectives recorded every step without affecting success or subtask ordering."""
+    """Objectives that advance independently until completion and resume after reset.
+
+    They contribute to recorded scores without affecting success or subtask ordering.
+    """
 
     def __post_init__(self):
         if self.timeout_s is not None:
@@ -46,6 +49,6 @@ class TaskTerminationCfg:
         ), "tracked must be a list of ProgressObjective definitions."
         assert isinstance(self.failures, dict), "failures must map names to TerminationTermCfg definitions."
         for name, failure in self.failures.items():
-            assert name not in {"success", "time_out"}, f"Failure name '{name}' is reserved."
+            assert name not in {"success", "time_out", "progress_tracking"}, f"Failure name '{name}' is reserved."
             assert isinstance(failure, TerminationTermCfg), f"Failure '{name}' must be a TerminationTermCfg."
             assert not failure.time_out, f"Failure '{name}' cannot be a timeout; use timeout_s instead."

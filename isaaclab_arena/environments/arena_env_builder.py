@@ -34,7 +34,7 @@ from isaaclab_arena.metrics.metric_base import MetricBase
 from isaaclab_arena.metrics.metric_term_cfg import MetricTermCfg
 from isaaclab_arena.metrics.recorder_manager_utils import metrics_to_recorder_manager_cfg
 from isaaclab_arena.progress_tracking.progress_tracker import ProgressTrackingRecorderManagerCfg
-from isaaclab_arena.progress_tracking.task_success import TaskSuccessTerm
+from isaaclab_arena.progress_tracking.task_success import TaskProgressTerm, task_success
 from isaaclab_arena.recording.common_terms import CoreEpisodeRecorderTermCfg, VariationEpisodeRecorderTermCfg
 from isaaclab_arena.recording.episode_recorder_manager import EpisodeRecorderTermCfg
 from isaaclab_arena.recording.progress_terms import ProgressEpisodeRecorderTermCfg
@@ -205,10 +205,10 @@ class ArenaEnvBuilder:
             termination_terms["time_out"] = TerminationTermCfg(func=time_out, time_out=True)
         success_objectives = task_termination_cfg.success
 
-        # The shared term also owns progress for tasks with only tracked objectives.
+        # Keep progress ownership independent of removable success termination.
         if success_objectives or task_termination_cfg.tracked:
-            success_term = TerminationTermCfg(
-                func=TaskSuccessTerm,
+            termination_terms["progress_tracking"] = TerminationTermCfg(
+                func=TaskProgressTerm,
                 params={
                     "success_objectives": success_objectives,
                     "tracked_objectives": task_termination_cfg.tracked,
@@ -216,7 +216,9 @@ class ArenaEnvBuilder:
                     "desired_subtask_success_state": task_termination_cfg.desired_subtask_success_state,
                 },
             )
-            termination_terms["success"] = success_term
+        # Insertion order makes progress available before the read-only success check.
+        if success_objectives:
+            termination_terms["success"] = TerminationTermCfg(func=task_success)
         termination_fields = [(name, TerminationTermCfg, term) for name, term in termination_terms.items()]
         return make_configclass("TerminationsCfg", termination_fields)()
 

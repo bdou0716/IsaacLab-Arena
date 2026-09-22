@@ -10,6 +10,7 @@ import functools
 import torch
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from isaaclab.managers import ManagerTermBase, SceneEntityCfg, TerminationTermCfg
 from isaaclab.managers.recorder_manager import RecorderManagerBaseCfg, RecorderTerm, RecorderTermCfg
@@ -17,8 +18,9 @@ from isaaclab.utils.configclass import configclass
 
 from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective, ProgressObjectiveCompletionMode
 from isaaclab_arena.progress_tracking.progress_tracking_utils import DEFAULT_GROUP_NAME, _predicate_repr
-from isaaclab_arena.tasks.predicates.composite import managed_predicate_ids, reset_managed_predicates
+from isaaclab_arena.tasks.predicates.composite import iter_predicates, managed_predicate_ids, reset_managed_predicates
 from isaaclab_arena.tasks.predicates.consecutive import ConsecutivePredicate
+from isaaclab_arena.tasks.predicates.object_settling import ObjectsSettledForConsecutiveSteps, objects_settled
 
 
 def _initialize_predicate_parameters(value, env) -> None:
@@ -43,7 +45,7 @@ def _resolve_progress_predicate(predicate, env):
     """Instantiate a managed predicate config when the tracker gains access to the environment."""
 
     # Isaac Lab does not resolve configs inside ProgressObjective dataclasses.
-    # NOTE(cvolk): TaskSuccessTerm creates the tracker while TerminationManager is
+    # NOTE(cvolk): The progress owner creates the tracker while TerminationManager is
     # still being constructed, before env.termination_manager is assigned.
     # We therefore cannot delegate nested predicate initialization to that manager.
     # TODO(cvolk): Revisit this TerminationTermCfg adapter during the stateful predicate redesign.
@@ -114,6 +116,9 @@ class ProgressObjectiveState:
     active_predicates: dict[str, str | None]
     """Next predicate per group, or None when the group is complete."""
 
+    role: Literal["success", "tracked"] = "success"
+    """Whether the objective determines success or only records events."""
+
 
 @dataclass
 class ProgressState:
@@ -123,10 +128,13 @@ class ProgressState:
     """Per-objective state, keyed by ProgressObjective name."""
 
     overall_score: float
-    """Weighted progress of the objectives, normalized to [0, 1]."""
+    """Weighted event coverage across success and tracked objectives, normalized to [0, 1]."""
 
     all_complete: bool
     """Whether the task's success requirements are met for this env."""
+
+    has_success_criteria: bool = True
+    """Whether task success is defined for this episode."""
 
 
 class ProgressObjectiveRunner:
@@ -399,9 +407,10 @@ class ProgressTracker:
     """Track success objectives and optional events that do not affect completion.
 
     The positional objectives determine success and subtask order. Tracked objectives
-    advance independently on every step. Both lists contribute to recorded scores.
-    An empty success list never completes the task. Use managed predicate configurations
-    for independent counters; sharing a managed instance across both lists is rejected.
+    ignore subtask order and stop evaluating after completion until reset. Both lists
+    contribute to recorded event coverage. An empty success list defines no success result.
+    Shared counters require the same callable at the first position of objectives
+    active from the first episode update. Other occurrences need independent counters.
     """
 
     def __init__(
@@ -416,21 +425,20 @@ class ProgressTracker:
         tracked_objectives: list[ProgressObjective] | None = None,
     ):
         success_objectives = progress_objectives
-        progress_objectives = success_objectives + (tracked_objectives or [])
-        assert progress_objectives, "Task progress requires at least one success or tracked objective."
-        objective_names = [objective.name for objective in progress_objectives]
-        assert len(set(objective_names)) == len(objective_names), "Progress objective names must be unique."
-        self.progress_objectives = progress_objectives
+        recorded_objectives = success_objectives + (tracked_objectives or [])
+        assert recorded_objectives, "Task progress requires at least one success or tracked objective."
+        objective_names = [objective.name for objective in recorded_objectives]
+        duplicate_names = sorted({name for name in objective_names if objective_names.count(name) > 1})
+        assert not duplicate_names, f"Progress objective names must be unique; duplicates: {duplicate_names!r}."
+        self.progress_objectives = recorded_objectives
         self.num_envs = num_envs
         self.device = device
         self.runners = [
-            ProgressObjectiveRunner(objective, num_envs, device, env=env) for objective in progress_objectives
+            ProgressObjectiveRunner(objective, num_envs, device, env=env) for objective in recorded_objectives
         ]
         self._success_runners = self.runners[: len(success_objectives)]
         self._tracked_runners = self.runners[len(success_objectives) :]
-        assert not (
-            self._managed_predicate_ids(self._success_runners) & self._managed_predicate_ids(self._tracked_runners)
-        ), "Success and tracked objectives must not share managed predicate instances; use predicate configs instead."
+        self._validate_predicates(subtasks_are_sequential)
         self._subtask_runners = self._group_runners_by_subtask(self._success_runners)
         assert not subtasks_are_sequential or self._subtask_runners, "Sequential tracking requires subtask indices."
         if desired_subtask_success_state is not None:
@@ -449,14 +457,46 @@ class ProgressTracker:
         self._task_success = torch.zeros(num_envs, dtype=torch.bool, device=device)
         self._events: list[list[PredicateEvent]] = [[] for _ in range(num_envs)]
 
-    @staticmethod
-    def _managed_predicate_ids(runners: list[ProgressObjectiveRunner]) -> set[int]:
-        """Identify managed callables whose counters cannot be shared across objective roles."""
-        predicates = []
-        for runner in runners:
+    @property
+    def has_success_criteria(self) -> bool:
+        """Whether at least one objective determines task success."""
+        return bool(self._success_runners)
+
+    def _validate_predicates(self, subtasks_are_sequential: bool) -> None:
+        """Reject unsafe counter sharing and observers that write initial rest poses."""
+        counter_owners: dict[int, tuple[int, str, bool]] = {}
+        for runner in self.runners:
+            objective_name = runner.progress_objective.name
+            objective_starts_immediately = (
+                runner in self._tracked_runners
+                or not subtasks_are_sequential
+                or runner.progress_objective.parent_subtask_idx == 0
+            )
             for chain in runner.predicate_chains.values():
-                predicates.extend(predicate for predicate, _ in chain)
-        return managed_predicate_ids(predicates)
+                for predicate_index, (root, _) in enumerate(chain):
+                    starts_immediately = objective_starts_immediately and predicate_index == 0
+                    for counter_id in managed_predicate_ids([root]):
+                        owner = counter_owners.get(counter_id)
+                        if owner is not None:
+                            assert owner[0] == id(root), (
+                                f"Objectives {owner[1]!r} and {objective_name!r} share a mutable counter "
+                                "through distinct predicate callables. Use separate predicate configuration "
+                                "instances to create separate mutable counters."
+                            )
+                            assert owner[2] and starts_immediately, (
+                                f"Objectives {owner[1]!r} and {objective_name!r} share a mutable counter "
+                                "with potentially different activation histories. Share only first predicates "
+                                "active from the first episode update, or use separate predicate configurations."
+                            )
+                        counter_owners[counter_id] = (id(root), objective_name, starts_immediately)
+                    if runner in self._tracked_runners:
+                        for predicate in iter_predicates([root]):
+                            assert predicate is not objects_settled and not isinstance(
+                                predicate, ObjectsSettledForConsecutiveSteps
+                            ), (
+                                f"Tracked objective {objective_name!r} uses a settling predicate that writes "
+                                "initial rest poses. Use a read-only predicate instead."
+                            )
 
     @staticmethod
     def _group_runners_by_subtask(runners: list[ProgressObjectiveRunner]) -> list[list[ProgressObjectiveRunner]]:
@@ -481,13 +521,12 @@ class ProgressTracker:
         """Advance eligible predicate sequences once and update task success for the current step."""
 
         active_envs = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
-        # Progress advancement and final-condition checks share predicate results.
+        # Success advancement, tracked advancement, and final checks share predicate results.
         # Evaluating a stateful predicate twice could advance its counter twice
         # without another simulation step.
         predicate_results_this_step: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
-        for subtask_index, subtask_runners in enumerate(
-            self._subtask_runners or ([self._success_runners] if self._success_runners else [])
-        ):
+        success_groups = self._subtask_runners or ([self._success_runners] if self._success_runners else [])
+        for subtask_index, subtask_runners in enumerate(success_groups):
             # Use completion before advancing so the next subtask starts on the following step.
             subtask_was_complete = self._all_objectives_complete(subtask_runners)
             check_final_conditions = (
@@ -595,6 +634,7 @@ class ProgressTracker:
             for i, runner in enumerate(self.runners):
                 objective = runner.progress_objective
                 state = runner.get_state_for_env(env_idx, completeness[i][env_idx], scores[i][env_idx])
+                state.role = "success" if i < len(self._success_runners) else "tracked"
                 progress_objective_states[objective.name] = state
             weighted_score = sum(
                 runner.progress_objective.score * float(score[env_idx]) for runner, score in zip(self.runners, scores)
@@ -608,6 +648,7 @@ class ProgressTracker:
                     progress_objectives=progress_objective_states,
                     overall_score=overall_score,
                     all_complete=bool(task_complete[env_idx]),
+                    has_success_criteria=self.has_success_criteria,
                 )
             )
         return output
@@ -633,12 +674,13 @@ class ProgressTrackingRecorder(RecorderTerm):
                 ProgressState(
                     progress_objectives={
                         "<name>": ProgressObjectiveState(
-                            completed_groups, total_groups, score, is_complete, active_predicates
+                            completed_groups, total_groups, score, is_complete, active_predicates, role
                         ),
                         ...
                     },
                     overall_score=float,                   # weighted mean of objective scores, in [0, 1]
                     all_complete=bool,
+                    has_success_criteria=bool,
                 ),
                 ...
             ],
@@ -654,7 +696,7 @@ class ProgressTrackingRecorder(RecorderTerm):
         """Publish the current progress snapshot without advancing the tracker."""
 
         progress_tracker = self._env.progress_tracker
-        assert progress_tracker is not None, "Task success must initialize the progress tracker before recording."
+        assert progress_tracker is not None, "The progress owner must initialize the tracker before recording."
         self._env.extras["progress_tracking"] = {
             "states": progress_tracker.get_state(),
             "events": progress_tracker.get_events(),
