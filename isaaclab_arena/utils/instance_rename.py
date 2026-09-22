@@ -19,17 +19,70 @@ import keyword
 import textwrap
 import torch
 from dataclasses import fields, is_dataclass
-from typing import Any
+from typing import Any, Literal
 
 from isaaclab.envs import mdp
-from isaaclab.managers import ObservationGroupCfg, ObservationTermCfg, SceneEntityCfg
+from isaaclab.managers import ActionTermCfg, ObservationGroupCfg, ObservationTermCfg, RewardTermCfg, SceneEntityCfg
 from isaaclab.sensors import FrameTransformerCfg
 
 from isaaclab_arena.utils.configclass import make_configclass
 
 
+def active_action_names(cfg: Any) -> tuple[str, ...]:
+    """Return enabled action terms in configuration declaration order."""
+    if cfg is None:
+        return ()
+    return tuple(field.name for field in fields(cfg) if isinstance(getattr(cfg, field.name), ActionTermCfg))
+
+
+def robot_action_rate_l2(env, action_names: tuple[str, ...]) -> torch.Tensor:
+    """Measure action changes only in the named robot's columns."""
+    manager = env.action_manager
+    changes = []
+    column = 0
+    for name, width in zip(manager.active_terms, manager.action_term_dim):
+        if name in action_names:
+            changes.append(manager.action[:, column : column + width] - manager.prev_action[:, column : column + width])
+        column += width
+    assert len(changes) == len(action_names), "Action-rate reward names must resolve to active action terms"
+    return torch.sum(torch.square(torch.cat(changes, dim=-1)), dim=-1)
+
+
+def scope_action_rate(cfg: Any, action_names: tuple[str, ...]) -> Any:
+    """Bind default action-rate rewards to one robot without modifying its config."""
+    if cfg is None:
+        return None
+    copied = copy.deepcopy(cfg)
+    for field in fields(copied):
+        term = getattr(copied, field.name)
+        if isinstance(term, RewardTermCfg) and term.func is mdp.action_rate_l2:
+            assert not term.params, "Default action-rate rewards do not accept parameters"
+            term.func = robot_action_rate_l2
+            term.params = {"action_names": action_names}
+    return copied
+
+
+def validate_instance_key(instance_key: str) -> None:
+    """Validate an instance name before it becomes an asset identifier."""
+    assert isinstance(instance_key, str) and instance_key.isidentifier(), "Instance key must be an identifier"
+    assert not keyword.iskeyword(instance_key), "Instance key must not be a Python keyword"
+    assert instance_key.isascii() and instance_key.islower(), "Instance keys must use lowercase ASCII identifiers"
+    assert instance_key != "robot", "Instance key must differ from the unkeyed robot scene name"
+
+
+def instance_scene_name(instance_key: str | None, name: str) -> str:
+    """Return the runtime scene name for a robot-owned entity."""
+    if instance_key is None:
+        return name
+    return instance_key if name == "robot" else f"{instance_key}_{name}"
+
+
+def _is_robot_prim_path(value: str) -> bool:
+    return value == "{ENV_REGEX_NS}/Robot" or value.startswith("{ENV_REGEX_NS}/Robot/")
+
+
 def robot_last_action(env, action_names: tuple[str, ...]) -> torch.Tensor:
-    """Return raw action terms for one robot, concatenated in manager order."""
+    """Return raw action terms in the caller-supplied action-name order."""
     return torch.cat([env.action_manager.get_term(name).raw_actions for name in action_names], dim=-1)
 
 
@@ -61,7 +114,9 @@ def rename_instance_cfg(
     instance_key: str,
     scene_names: tuple[str, ...],
     action_names: tuple[str, ...],
-    kind: str,
+    kind: Literal[
+        "scene", "actions", "observations", "events", "rewards", "curriculum", "commands", "recorders", "terminations"
+    ],
 ) -> Any:
     """Return an independent configuration with this robot's names rewritten.
 
@@ -75,19 +130,17 @@ def rename_instance_cfg(
     Returns:
         A new configuration with copied values and names scoped to the instance.
     """
-    assert instance_key.isidentifier() and not keyword.iskeyword(instance_key), "Instance key must be an identifier"
-    assert instance_key.isascii() and instance_key.islower(), "Instance keys must use lowercase ASCII identifiers"
-    assert instance_key != "robot", "Instance key must differ from the unkeyed robot scene name"
+    validate_instance_key(instance_key)
     assert instance_key not in scene_names, "Instance key must differ from every original scene field"
     if cfg is None:
         return None
-    scene_map = {name: instance_key if name == "robot" else f"{instance_key}_{name}" for name in scene_names}
+    scene_map = {name: instance_scene_name(instance_key, name) for name in scene_names}
     action_map = {name: f"{instance_key}_{name}" for name in action_names}
     copied = copy.deepcopy(cfg)
     renamed_fields = []
     for field in fields(copied):
         value = getattr(copied, field.name)
-        location = f"{kind}.{field.name}"
+        location = f"{instance_key}:{kind}.{field.name}"
         if kind == "observations" and field.name == "camera_obs":
             camera_fields = []
             for camera_field in fields(value):
@@ -96,7 +149,7 @@ def rename_instance_cfg(
                     f"{instance_key}_{camera_field.name}" if isinstance(term, ObservationTermCfg) else camera_field.name
                 )
                 camera_fields.append(
-                    (name, camera_field.type, _rewrite(term, scene_map, action_map, location, instance_key))
+                    (name, camera_field.type, _rewrite(term, scene_map, action_map, f"{location}.{name}", instance_key))
                 )
             group = make_configclass("InstanceCameraObsCfg", camera_fields, bases=(ObservationGroupCfg,))()
             renamed_fields.append(("camera_obs", type(group), group))
@@ -116,8 +169,8 @@ def _rewrite(value, scene_map, action_map, location, instance_key, attribute="")
     if isinstance(value, str):
         if attribute == "prim_path":
             key = scene_map.get("robot")
-            if key is not None:
-                return value.replace("{ENV_REGEX_NS}/Robot", f"{{ENV_REGEX_NS}}/{key[0].upper()}{key[1:]}")
+            if key is not None and _is_robot_prim_path(value):
+                return f"{{ENV_REGEX_NS}}/{key[0].upper()}{key[1:]}" + value[len("{ENV_REGEX_NS}/Robot") :]
         if attribute in {
             "asset_name",
             "frame_transformer_name",
@@ -160,25 +213,42 @@ def _rewrite(value, scene_map, action_map, location, instance_key, attribute="")
     return value
 
 
+def _default_scene_names(value):
+    """Find entity defaults in supported configuration containers."""
+    if isinstance(value, SceneEntityCfg):
+        yield value.name
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _default_scene_names(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _default_scene_names(child)
+
+
 def _validate_callable(func, params, scene_map, action_map, location):
     """Reject implicit entity defaults and literal scene or action lookups."""
     assert not isinstance(func, str), f"{location}: keyed terms require a callable, not a string reference"
     callable_body = func.__call__ if inspect.isclass(func) else inspect.unwrap(func)
-    try:
-        signature = inspect.signature(callable_body)
-    except (TypeError, ValueError) as error:
-        raise AssertionError(f"{location}: cannot inspect callable entity defaults") from error
-    for name, parameter in signature.parameters.items():
-        if name not in params and isinstance(parameter.default, SceneEntityCfg):
-            assert (
-                parameter.default.name not in scene_map
-            ), f"{location}: pass '{name}' explicitly; its default references '{parameter.default.name}'"
     bodies = (func.__init__, callable_body) if inspect.isclass(func) else (callable_body,)
     for body in bodies:
+        if body is object.__init__:
+            continue
+        try:
+            signature = inspect.signature(body)
+        except (TypeError, ValueError) as error:
+            raise AssertionError(f"{location}: cannot inspect callable entity defaults") from error
+        for name, parameter in signature.parameters.items():
+            if body is callable_body and name in params:
+                continue
+            for entity_name in _default_scene_names(parameter.default):
+                assert entity_name not in scene_map, (
+                    f"{location}: pass '{name}' explicitly; its default references '{entity_name}'. "
+                    "Managed constructors must read entity bindings from their configuration."
+                )
         try:
             source = ast.parse(textwrap.dedent(inspect.getsource(body)))
-        except (OSError, TypeError, IndentationError, SyntaxError):
-            continue
+        except (OSError, TypeError, IndentationError, SyntaxError) as error:
+            raise AssertionError(f"{location}: cannot inspect keyed term body {body}") from error
         for node in ast.walk(source):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get_term":
                 arguments = list(node.args[:1]) + [item.value for item in node.keywords if item.arg == "name"]
@@ -204,7 +274,7 @@ def _assert_no_old_references(value, scene_map, location):
         for field in fields(value):
             child = getattr(value, field.name)
             if field.name == "prim_path" and isinstance(child, str):
-                assert "{ENV_REGEX_NS}/Robot" not in child, f"{location}: unrenamed robot prim path"
+                assert not _is_robot_prim_path(child), f"{location}: unrenamed robot prim path"
             _assert_no_old_references(child, scene_map, f"{location}.{field.name}")
     elif isinstance(value, dict):
         for name, child in value.items():

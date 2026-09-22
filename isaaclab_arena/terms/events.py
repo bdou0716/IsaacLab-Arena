@@ -14,9 +14,10 @@ from isaaclab.envs import ManagerBasedEnv
 from isaaclab.managers import EventTermCfg, ManagerTermBase, SceneEntityCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.utils import math as math_utils
+from isaaclab_tasks.contrib.stack.mdp.franka_stack_events import randomize_object_pose
 
 from isaaclab_arena.assets.object_type import ObjectType
-from isaaclab_arena.utils.pose import Pose
+from isaaclab_arena.utils.pose import Pose, PosePerEnv, PoseRange
 from isaaclab_arena.utils.usd_prim_tree import exclude_referenced_physics_roots, find_nested_physics_roots
 from isaaclab_arena.utils.velocity import Velocity
 
@@ -315,14 +316,22 @@ def reset_articulation_pose_and_joints(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
     asset_cfg: SceneEntityCfg,
-    pose: Pose,
+    pose: Pose | PosePerEnv | PoseRange | None,
     velocity: Velocity | None = None,
 ) -> None:
     """Restore an articulation's root state and default joint state."""
     if env_ids is None:
         return
-    set_object_pose(env, env_ids, asset_cfg, pose, velocity)
+    if isinstance(pose, PosePerEnv):
+        set_object_pose_per_env(env, env_ids, asset_cfg, pose.poses)
+    elif isinstance(pose, PoseRange):
+        randomize_object_pose(env, env_ids, pose_range=pose.to_dict(), asset_cfgs=[asset_cfg])
+    elif pose is not None:
+        set_object_pose(env, env_ids, asset_cfg, pose, velocity)
     asset = env.scene[asset_cfg.name]
+    if velocity is not None and not isinstance(pose, Pose):
+        root_velocity = velocity.to_tensor(device=env.device).unsqueeze(0).expand(len(env_ids), -1)
+        asset.write_root_velocity_to_sim(root_velocity, env_ids=env_ids)
     joint_position = asset.data.default_joint_pos.torch[env_ids].clone()
     joint_velocity = asset.data.default_joint_vel.torch[env_ids].clone()
     asset.write_joint_position_to_sim_index(position=joint_position, env_ids=env_ids)

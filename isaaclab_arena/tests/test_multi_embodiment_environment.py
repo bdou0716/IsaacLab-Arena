@@ -67,6 +67,8 @@ def _test_two_robots(simulation_app, output_dir, cameras=False, mixed=False):
     from isaaclab_arena.terms.recorders import TrajectoryRecorderTermsBaseCfg
 
     definition = make_two_robot_definition(enable_cameras=cameras, mixed=mixed, relations=cameras)
+    if not mixed:
+        definition.embodiments.reverse()
     builder = ArenaEnvBuilder(
         definition,
         ArenaEnvBuilderCfg(
@@ -119,6 +121,13 @@ def _test_two_robots(simulation_app, output_dir, cameras=False, mixed=False):
         if not mixed:
             assert recorders.right_record_end_effector_poses_0.asset_name == "right"
         assert env.action_space.shape[-1] == sum(env.unwrapped.action_manager.action_term_dim)
+        if not mixed:
+            assert env.unwrapped.action_manager.active_terms == [
+                "right_arm_action",
+                "right_gripper_action",
+                "left_arm_action",
+                "left_gripper_action",
+            ]
         widths = {}
         for key in keys:
             widths[key] = sum(
@@ -133,6 +142,20 @@ def _test_two_robots(simulation_app, output_dir, cameras=False, mixed=False):
             assert widths == {"left": 8, "right": 8}
         for _ in range(2):
             observations, _, _, _, _ = env.step(torch.zeros(env.action_space.shape, device=env.unwrapped.device))
+        if not mixed:
+            manager = env.unwrapped.action_manager
+            manager.action.zero_()
+            manager.prev_action.zero_()
+            manager.action[:, :8] = 1.0
+            rewards = env.unwrapped.cfg.rewards
+            assert torch.equal(
+                rewards.right_action_rate.func(env.unwrapped, **rewards.right_action_rate.params),
+                torch.full((2,), 8.0, device=env.unwrapped.device),
+            )
+            assert torch.equal(
+                rewards.left_action_rate.func(env.unwrapped, **rewards.left_action_rate.params),
+                torch.zeros(2, device=env.unwrapped.device),
+            )
         if mixed:
             assert observations["policy"]["actions"].shape[-1] == widths["robot"]
         env.reset()
@@ -239,6 +262,14 @@ def _test_invalid_compositions(simulation_app):
     assert definition.embodiments == [definition.embodiment]
     definition.embodiment = None
     assert definition.embodiments == []
+    definition.embodiment = FrankaJointPosEmbodiment(instance_key="prepared")
+    builder = ArenaEnvBuilder(definition, ArenaEnvBuilderCfg(solve_relations=False))
+    prepared, _ = builder.compose_manager_cfg()
+    builder.cfg.mimic = True
+    with pytest.raises(AssertionError, match="without an instance key"):
+        builder.get_entry_point()
+    with pytest.raises(AssertionError, match="without an instance key"):
+        builder.build_registered(prepared)
     return True
 
 
@@ -281,8 +312,131 @@ def _test_observation_precedence(simulation_app):
         )
         with pytest.raises(AssertionError, match="duplicate observation groups"):
             ArenaEnvBuilder(definition, ArenaEnvBuilderCfg(solve_relations=False)).compose_manager_cfg()
+    cameras[1].camera_obs.enable_corruption = not cameras[0].camera_obs.enable_corruption
+    with pytest.raises(AssertionError, match="Camera groups disagree"):
+        combine_observation_cfgs(*cameras)
     return True
 
 
 def test_observation_overrides_do_not_depend_on_camera_count():
     assert run_function_with_persistent_simulation_app(_test_observation_precedence)
+
+
+def _test_scene_articulation_reset(simulation_app):
+    import torch
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from isaaclab_arena.assets.object import Object
+    from isaaclab_arena.assets.object_type import ObjectType
+    from isaaclab_arena.terms.events import reset_articulation_pose_and_joints
+    from isaaclab_arena.utils.pose import Pose, PosePerEnv, PoseRange
+    from isaaclab_arena.utils.velocity import Velocity
+
+    position = torch.full((2, 3), 9.0)
+    velocity = torch.full((2, 3), 8.0)
+    root_pose = torch.full((2, 7), 7.0)
+    root_velocity = torch.full((2, 6), 6.0)
+    defaults = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    asset = SimpleNamespace(
+        data=SimpleNamespace(
+            default_joint_pos=SimpleNamespace(torch=defaults),
+            default_joint_vel=SimpleNamespace(torch=torch.zeros_like(defaults)),
+        ),
+        write_joint_position_to_sim_index=lambda position, env_ids: apply_positions(position, env_ids),
+        write_joint_velocity_to_sim_index=lambda velocity, env_ids: apply_velocities(velocity, env_ids),
+        write_root_pose_to_sim=lambda pose, env_ids: apply_root_pose(pose, env_ids),
+        write_root_velocity_to_sim=lambda velocity, env_ids: apply_root_velocity(velocity, env_ids),
+    )
+
+    def apply_positions(values, env_ids):
+        position[env_ids] = values
+
+    def apply_velocities(values, env_ids):
+        velocity[env_ids] = values
+
+    def apply_root_pose(values, env_ids):
+        root_pose[env_ids] = values
+
+    def apply_root_velocity(values, env_ids):
+        root_velocity[env_ids] = values
+
+    class Scene(dict):
+        env_origins = torch.tensor([[0.0, 0.0, 0.0], [10.0, 20.0, 30.0]])
+
+    obj = Object(name="drawer", usd_path="/unused/drawer.usd", object_type=ObjectType.ARTICULATION)
+    term = obj.get_event_cfg()[1]
+    assert term.func is reset_articulation_pose_and_joints
+    env = SimpleNamespace(scene=Scene(drawer=asset), device="cpu")
+    env_ids = torch.tensor([1])
+    term.func(env, env_ids, **term.params)
+    assert torch.equal(position[0], torch.full((3,), 9.0))
+    assert torch.equal(position[1], defaults[1])
+    assert torch.equal(velocity[0], torch.full((3,), 8.0))
+    assert torch.equal(velocity[1], torch.zeros(3))
+    assert torch.equal(root_pose, torch.full((2, 7), 7.0))
+    assert torch.equal(root_velocity, torch.full((2, 6), 6.0))
+    cases = (
+        (Pose(position_xyz=(1.0, 2.0, 3.0)), (11.0, 22.0, 33.0, 0.0, 0.0, 0.0, 1.0)),
+        (
+            PosePerEnv([Pose(position_xyz=(4.0, 5.0, 6.0)), Pose(position_xyz=(7.0, 8.0, 9.0))]),
+            (17.0, 28.0, 39.0, 0.0, 0.0, 0.0, 1.0),
+        ),
+        (PoseRange(position_xyz_min=(2.0, 3.0, 4.0), position_xyz_max=(2.0, 3.0, 4.0)), None),
+    )
+    for pose, expected_root in cases:
+        position.fill_(9.0)
+        velocity.fill_(8.0)
+        root_pose.fill_(7.0)
+        root_velocity.fill_(6.0)
+        obj.set_initial_pose(pose)
+        term = obj.get_event_cfg()[1]
+        with patch("isaaclab_arena.terms.events.randomize_object_pose") as randomize:
+            term.func(env, env_ids, **term.params)
+            if isinstance(pose, PoseRange):
+                randomize.assert_called_once_with(
+                    env, env_ids, pose_range=pose.to_dict(), asset_cfgs=[term.params["asset_cfg"]]
+                )
+            else:
+                randomize.assert_not_called()
+                assert torch.equal(root_pose[1], torch.tensor(expected_root))
+                assert torch.equal(root_velocity[1], torch.zeros(6))
+        assert torch.equal(position[0], torch.full((3,), 9.0))
+        assert torch.equal(position[1], defaults[1])
+        assert torch.equal(velocity[0], torch.full((3,), 8.0))
+        assert torch.equal(velocity[1], torch.zeros(3))
+        assert torch.equal(root_pose[0], torch.full((7,), 7.0))
+        assert torch.equal(root_velocity[0], torch.full((6,), 6.0))
+    configured_velocity = Velocity(linear_xyz=(1.0, 2.0, 3.0), angular_xyz=(4.0, 5.0, 6.0))
+    for pose, expected_root in ((None, None), *cases):
+        obj = Object(name="drawer", usd_path="/unused/drawer.usd", object_type=ObjectType.ARTICULATION)
+        if pose is not None:
+            obj.set_initial_pose(pose)
+        obj.set_initial_velocity(configured_velocity)
+        term = obj.get_event_cfg()[1]
+        position.fill_(9.0)
+        velocity.fill_(8.0)
+        root_pose.fill_(7.0)
+        root_velocity.fill_(6.0)
+        with patch(
+            "isaaclab_arena.terms.events.randomize_object_pose",
+            side_effect=lambda env, env_ids, **kwargs: apply_root_velocity(torch.zeros(len(env_ids), 6), env_ids),
+        ):
+            term.func(env, env_ids, **term.params)
+        torch.testing.assert_close(root_velocity[1], torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]))
+        assert torch.equal(root_velocity[0], torch.full((6,), 6.0))
+        assert torch.equal(root_pose[0], torch.full((7,), 7.0))
+        if expected_root is not None:
+            assert torch.equal(root_pose[1], torch.tensor(expected_root))
+        elif pose is None:
+            assert torch.equal(root_pose[1], torch.full((7,), 7.0))
+            assert not obj.has_pose_reset_event()
+        assert torch.equal(position[0], torch.full((3,), 9.0))
+        assert torch.equal(position[1], defaults[1])
+        assert torch.equal(velocity[0], torch.full((3,), 8.0))
+        assert torch.equal(velocity[1], torch.zeros(3))
+    return True
+
+
+def test_scene_articulation_owns_selected_joint_reset():
+    assert run_function_with_persistent_simulation_app(_test_scene_articulation_reset)

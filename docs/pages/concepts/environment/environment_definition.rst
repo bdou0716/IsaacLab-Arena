@@ -358,23 +358,19 @@ can focus on the scene layout and task definition. Reach for Python when the YAM
 express what you need: RL registration, teleop, ``ManagerBasedRLEnvCfg`` patches,
 placement parameters, and so on.
 
-Next Steps
-----------
-
-:doc:`env_builder` shows how either definition becomes a runnable Isaac Lab
-environment.
-
-
 Several robots in one environment
 ---------------------------------
 
 Python environment definitions can hold several robot instances. Give each keyed
-robot a distinct instance key and pass the robots in action-tensor order:
+robot a distinct instance key and pass the robots in action-column order.
+Each robot contributes its action terms in declaration order:
 
 .. code-block:: python
 
    left = FrankaJointPosEmbodiment(instance_key="left", enable_cameras=True)
    right = FrankaJointPosEmbodiment(instance_key="right", enable_cameras=True)
+   left.set_initial_pose(Pose(position_xyz=(-2.0, 0.0, 0.0), rotation_xyzw=(0.0, 0.0, 0.0, 1.0)))
+   right.set_initial_pose(Pose(position_xyz=(2.0, 0.0, 0.0), rotation_xyzw=(0.0, 0.0, 0.0, 1.0)))
    environment = IsaacLabArenaEnvironment(
        name="two_arms", scene=scene, embodiments=[left, right], task=task,
    )
@@ -388,9 +384,21 @@ The episode record maps scene keys to registered robot types under ``embodiments
 The single-robot argument remains available as ``embodiment``. Reading it requires
 at most one robot; assigning it replaces the list. At most one member of a robot
 list may be unkeyed. An unkeyed member keeps the scene key ``robot``.
-Every keyed member must satisfy the embodiment naming rule.
+Every keyed member must satisfy the :doc:`embodiment naming rule <../embodiment/index>`.
 
 Demonstration generation, teleoperation, and extended reality require exactly one
-robot. Reachability validation is skipped, with a logged message, for several
+robot without an instance key. Reachability validation is skipped, with a warning, for several
 robots. Spatial placement relations still apply to each robot.
 Graph-based environment definitions remain single-robot.
+
+Ordinary observation groups use scene, then robot, then task precedence.
+Robot groups must not collide with each other. Camera terms merge into one group;
+all contributors must agree on group settings. Task contributions cannot override
+conflicting camera settings. Each robot action-rate reward uses only its own actions.
+Ordinary articulated scene objects reset their own joints.
+
+Next Steps
+----------
+
+:doc:`env_builder` shows how either definition becomes a runnable Isaac Lab
+environment.

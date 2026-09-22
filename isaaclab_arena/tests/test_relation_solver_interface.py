@@ -271,3 +271,45 @@ def test_set_initial_pose_create_reset_event_flag_controls_reset_event():
 
     box.set_initial_pose(Pose(position_xyz=(0.1, 0.2, 0.3), rotation_xyzw=(0.0, 0.0, 0.0, 1.0)))
     assert box.has_pose_reset_event()
+
+
+@pytest.mark.parametrize("resolve_on_reset", [False, True])
+def test_articulation_joint_reset_does_not_conflict_with_relation_placement(resolve_on_reset):
+    from isaaclab_arena.assets.object import Object
+    from isaaclab_arena.assets.object_type import ObjectType
+    from isaaclab_arena.environments.relation_solver_interface import _apply_relation_placement_result
+    from isaaclab_arena.relations.object_placer_params import ObjectPlacerParams
+    from isaaclab_arena.utils.pose import Pose, PosePerEnv
+
+    obj = Object(name="drawer", usd_path="/unused/drawer.usd", object_type=ObjectType.ARTICULATION)
+    joint_reset = obj.get_event_cfg()[1]
+    assert joint_reset is not None
+    assert not obj.has_pose_reset_event()
+    layouts = [
+        _fallback_layout(positions={obj: (0.1, 0.2, 0.3)}),
+        _fallback_layout(positions={obj: (0.4, 0.5, 0.6)}),
+    ]
+    params = ObjectPlacerParams(resolve_on_reset=resolve_on_reset)
+    pool = _FakePlacementPool(layouts, objects=[obj])
+    placement_event = _apply_relation_placement_result([obj], params, pool, num_envs=2)
+
+    if resolve_on_reset:
+        assert placement_event is not None
+        assert obj.get_initial_pose().position_xyz == (0.1, 0.2, 0.3)
+        assert obj.get_event_cfg()[1] is joint_reset
+        assert joint_reset.params["pose"] is None
+        assert not obj.has_pose_reset_event()
+    else:
+        assert placement_event is None
+        pose = obj.get_initial_pose()
+        assert isinstance(pose, PosePerEnv)
+        assert [item.position_xyz for item in pose.poses] == [(0.1, 0.2, 0.3), (0.4, 0.5, 0.6)]
+        assert obj.get_event_cfg()[1].params["pose"] is pose
+        assert obj.has_pose_reset_event()
+
+    obj.set_initial_pose(Pose.identity())
+    with pytest.raises(AssertionError, match="explicit pose-reset event"):
+        _apply_relation_placement_result([obj], params, pool, num_envs=2)
+    obj.disable_reset_pose()
+    assert obj.get_event_cfg()[1] is None
+    assert not obj.has_pose_reset_event()

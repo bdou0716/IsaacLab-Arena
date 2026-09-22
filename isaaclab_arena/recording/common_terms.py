@@ -22,7 +22,7 @@ def record_core_episode_results(env, env_id: int, embodiments: dict[str, str] | 
         success = bool(env.termination_manager.get_term("success")[env_id].item())
     return {
         "env_id": env_id,
-        "embodiments": dict(embodiments or {}),
+        **({"embodiments": dict(embodiments)} if embodiments else {}),
         "episode_in_env": env.get_episode_index(env_id),
         "seed": env.cfg.seed,
         "success": success,

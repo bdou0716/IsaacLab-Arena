@@ -39,16 +39,6 @@ while ``franka_joint_pos`` uses direct joint position control.
 Passing ``enable_cameras=True`` adds the robot's onboard cameras to the observation space.
 This is required for any policy that takes image observations, such as GR00T.
 
-More details
-------------
-
-The rest of this section covers further details of the embodiment component.
-
-.. toctree::
-   :maxdepth: 1
-
-   concept_teleop_devices_design
-
 Robot instance keys
 -------------------
 
@@ -61,7 +51,7 @@ Keys must be lowercase ASCII identifiers distinct from every original scene fiel
 For Franka, this excludes the robot, frame sensor, and camera field names.
 This restriction keeps the capitalized robot prim names unique.
 
-The configuration getters copy their output before applying these naming rules:
+Keyed configuration getters copy their output before applying these naming rules:
 
 * The primary articulation uses the instance key. Other scene fields gain its prefix.
 * Robot prim paths move from ``{ENV_REGEX_NS}/Robot`` to ``{ENV_REGEX_NS}/Left``.
@@ -78,9 +68,23 @@ This allows a robot policy to receive the observation names it was trained again
 
 Every keyed term must pass entity parameters explicitly. Validation rejects omitted
 entity defaults and literal scene or action-term lookups in inspectable Python functions.
-The diagnostic names the configuration term and its unresolved reference.
+The diagnostic names the robot instance, configuration term, and unresolved reference.
+Unreadable term bodies are rejected. The primary robot root must use
+``{ENV_REGEX_NS}/Robot``; other roots require a dedicated embodiment implementation.
 Validation cannot inspect arbitrary helper calls or dynamically generated names.
 Embodiment authors must avoid those references and validate the embodiment in simulation.
 The shipped G1 controller contains a literal action lookup and does not accept a key.
 
-Teleoperation and demonstration generation retain their single-robot assumptions.
+Teleoperation, demonstration generation, and extended-reality control require one robot
+without an instance key. Keys provide independent names; composing several robots also
+requires the multiple-embodiment support described in the environment guide.
+
+More details
+------------
+
+The rest of this section covers further details of the embodiment component.
+
+.. toctree::
+   :maxdepth: 1
+
+   concept_teleop_devices_design

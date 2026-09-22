@@ -10,7 +10,7 @@ from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 from isaaclab.envs import ManagerBasedRLMimicEnv
-from isaaclab.managers import ActionTermCfg, EventTermCfg
+from isaaclab.managers import EventTermCfg
 
 from isaaclab_arena.embodiments.common.arm_mode import ArmMode
 from isaaclab_arena.relations.collision_mode import CollisionMode
@@ -18,7 +18,12 @@ from isaaclab_arena.relations.placement_asset import PlaceableAsset
 from isaaclab_arena.utils.bounding_box import AxisAlignedBoundingBox
 from isaaclab_arena.utils.cameras import ArenaCameraCfg, make_camera_observation_cfg
 from isaaclab_arena.utils.configclass import combine_configclass_instances
-from isaaclab_arena.utils.instance_rename import rename_instance_cfg
+from isaaclab_arena.utils.instance_rename import (
+    active_action_names,
+    instance_scene_name,
+    rename_instance_cfg,
+    validate_instance_key,
+)
 from isaaclab_arena.utils.physics_backend import PhysicsBackend
 from isaaclab_arena.utils.pose import Pose, PosePerEnv, PoseRange
 
@@ -60,6 +65,8 @@ class EmbodimentBase(PlaceableAsset):
         instance_key: str | None = None,
     ):
         assert self.name is not None, "Embodiment name is required"
+        if instance_key is not None:
+            validate_instance_key(instance_key)
         self.embodiment_type = self.name
         self.instance_key = instance_key
         super().__init__(name=instance_key or self.name, tags=self.tags, collision_mode=collision_mode)
@@ -313,27 +320,20 @@ class EmbodimentBase(PlaceableAsset):
         return self.arm_mode
 
     def _instance_scene_name(self, name: str) -> str:
-        if self.instance_key is None:
-            return name
-        return self.instance_key if name == "robot" else f"{self.instance_key}_{name}"
+        return instance_scene_name(self.instance_key, name)
 
     def _rename_cfg(self, cfg: Any, kind: str) -> Any:
         """Namespace a copied getter result only when this embodiment has a key."""
         if self.instance_key is None:
             return cfg
+        assert (
+            self.scene_config.robot.prim_path == "{ENV_REGEX_NS}/Robot"
+        ), f"{self.instance_key}: keyed embodiments require the primary robot root {{ENV_REGEX_NS}}/Robot"
         scene_names = tuple(
             field.name
             for source in (self.scene_config, self.camera_config)
             if source is not None
             for field in fields(source)
         )
-        action_names = (
-            tuple(
-                field.name
-                for field in fields(self.action_config)
-                if isinstance(getattr(self.action_config, field.name), ActionTermCfg)
-            )
-            if self.action_config is not None
-            else ()
-        )
+        action_names = active_action_names(self.action_config)
         return rename_instance_cfg(cfg, self.instance_key, scene_names, action_names, kind)

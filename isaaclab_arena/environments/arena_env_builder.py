@@ -8,14 +8,13 @@ from __future__ import annotations
 import datetime
 import gymnasium as gym
 import logging
-from dataclasses import fields
 from typing import Any
 
 from isaaclab.app.settings_manager import get_settings_manager
 from isaaclab.devices.device_base import DeviceCfg, DevicesCfg
 from isaaclab.envs import ManagerBasedRLMimicEnv
 from isaaclab.envs.manager_based_env import ManagerBasedEnv
-from isaaclab.managers import ActionTermCfg, EventTermCfg
+from isaaclab.managers import EventTermCfg
 from isaaclab.managers.recorder_manager import RecorderManagerBaseCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab_newton.physics import NewtonCfg
@@ -61,7 +60,7 @@ from isaaclab_arena.utils.configclass import (
     combine_configclass_instances,
     make_configclass,
 )
-from isaaclab_arena.utils.instance_rename import scope_last_action
+from isaaclab_arena.utils.instance_rename import active_action_names, scope_action_rate, scope_last_action
 from isaaclab_arena.utils.isaaclab_utils.simulation_app import reapply_viewer_cfg
 from isaaclab_arena.utils.isaaclab_utils.warp_patch import install_empty_cpu_warp_to_torch_patch
 from isaaclab_arena.utils.multiprocess import get_local_rank
@@ -145,7 +144,7 @@ class ArenaEnvBuilder:
         # Delists itself unless the embodiment has a registered cuRobo config and the solver deps are importable.
         # TODO(xinjieyao, 2026-07-22): updated once robot-object co-placement is merged.
         if len(self.arena_env.embodiments) > 1:
-            logger.info("Skipping reachability validation for an environment with several embodiments")
+            logger.warning("Skipping reachability validation for an environment with several embodiments")
             placer_params.reachability_config.embodiment = None
         else:
             placer_params.reachability_config.embodiment = self.arena_env.embodiment
@@ -258,6 +257,24 @@ class ArenaEnvBuilder:
             fields.append((name, EpisodeRecorderTermCfg, term_cfg))
         return make_configclass("EpisodeRecorderManagerCfg", fields)()
 
+    def _validate_mode(self, env_cfg=None) -> None:
+        """Require one unkeyed robot for demonstration and interactive modes."""
+        self.arena_env.validate_embodiments()
+        restricted = (
+            self.cfg.mimic
+            or self.arena_env.teleop_device is not None
+            or get_settings_manager().get("/isaaclab/xr/enabled", False)
+            or (
+                env_cfg is not None
+                and any(getattr(env_cfg, name, None) is not None for name in ("xr", "isaac_teleop", "teleop_devices"))
+            )
+        )
+        if restricted:
+            assert len(self.arena_env.embodiments) == 1, "Mimic, teleoperation, and XR require exactly one embodiment"
+            assert (
+                self.arena_env.embodiment.instance_key is None
+            ), "Mimic, teleoperation, and XR require an embodiment without an instance key"
+
     def compose_manager_cfg(self) -> tuple[IsaacLabArenaManagerBasedRLEnvCfg, dict[str, Any]]:
         """Return the base ManagerBased cfg and the env kwargs (no registration).
 
@@ -266,17 +283,8 @@ class ArenaEnvBuilder:
         Returns:
             An (env_cfg, env_kwargs) tuple.
         """
-        self.arena_env.validate_embodiments()
+        self._validate_mode()
         robot_count = len(self.arena_env.embodiments)
-        if (
-            self.cfg.mimic
-            or self.arena_env.teleop_device is not None
-            or get_settings_manager().get("/isaaclab/xr/enabled", False)
-        ):
-            assert robot_count == 1, "Mimic, teleoperation, and XR require exactly one embodiment"
-            assert (
-                self.arena_env.embodiment.instance_key is None
-            ), "Mimic, teleoperation, and XR require an unnamed embodiment"
 
         # Solve relations before building scene config so positions are captured correctly.
         if self.cfg.solve_relations:
@@ -308,6 +316,8 @@ class ArenaEnvBuilder:
                 config = getattr(robot, getter)()
                 if robot_count > 1 and getter == "get_events_cfg":
                     config = scope_articulation_resets(config, robot.get_scene_key())
+                if robot_count > 1 and getter == "get_rewards_cfg":
+                    config = scope_action_rate(config, active_action_names(robot.get_action_cfg()))
                 configs.append(config)
             return _combine_robot_cfgs(getter, configs)
 
@@ -324,15 +334,7 @@ class ArenaEnvBuilder:
             observations = embodiment.get_observation_cfg()
             if robot_count > 1 and embodiment.instance_key is None:
                 action_cfg = embodiment.get_action_cfg()
-                action_names = (
-                    tuple(
-                        field.name
-                        for field in fields(action_cfg)
-                        if isinstance(getattr(action_cfg, field.name), ActionTermCfg)
-                    )
-                    if action_cfg is not None
-                    else ()
-                )
+                action_names = active_action_names(action_cfg)
                 observations = scope_last_action(observations, action_names)
             robot_observations.append(observations)
         duplicates = set(check_configclass_field_duplicates(*robot_observations)) - {"camera_obs"}
@@ -540,18 +542,14 @@ class ArenaEnvBuilder:
                     env_cfg.sim.physics, NewtonCfg
                 ), "env_cfg_callback changed the physics backend away from Newton."
 
-        if robot_count > 1:
-            assert env_cfg.xr is None, "XR requires exactly one embodiment"
-            assert (
-                env_cfg.isaac_teleop is None and env_cfg.teleop_devices is None
-            ), "Teleoperation requires exactly one embodiment"
+        self._validate_mode(env_cfg)
         env_kwargs: dict[str, Any] = {"variation_recorder": variation_recorder}
         return env_cfg, env_kwargs
 
     def get_entry_point(self) -> str | type[ManagerBasedRLMimicEnv]:
         """Return the entry point of the environment."""
+        self._validate_mode()
         if self.cfg.mimic:
-            assert len(self.arena_env.embodiments) == 1, "Mimic requires exactly one embodiment"
             embodiment = self.arena_env.embodiment
             assert embodiment is not None and not isinstance(
                 embodiment, NoEmbodiment
@@ -577,6 +575,7 @@ class ArenaEnvBuilder:
         Returns:
             A ``(name, cfg, env_kwargs)`` tuple.
         """
+        self._validate_mode(env_cfg)
         install_empty_cpu_warp_to_torch_patch()
         apply_arena_global_settings()
         name = self.arena_env.name

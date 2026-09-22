@@ -285,7 +285,7 @@ class GripperStateRecorderCfg(RecorderTermCfg):
 
 @configclass
 class TrajectoryRecorderTermsBaseCfg:
-    """Recorder terms capturing per-step robot and object trajectories.
+    """Scene-wide trajectory terms, recorded once when robot contributions are combined.
 
     End-effector pose terms are not fields here: :func:`make_trajectory_recorder_terms_cfg` adds one
     per tracked frame transformer, since embodiments with multiple end-effectors (e.g. bi-manual
@@ -368,14 +368,17 @@ def combine_embodiment_recorder_cfgs(configs: Sequence[tuple[str | None, Any]]) 
 
 def validate_recorded_frame_names(scene_cfg: Any, recorder_cfg: Any) -> None:
     """Reject collisions between frame names written to the trajectory dataset."""
-    names = []
+    owners = {}
     for field in fields(recorder_cfg):
         term = getattr(recorder_cfg, field.name)
         if not isinstance(term, EndEffectorPosesRecorderCfg):
             continue
         sensor = getattr(scene_cfg, term.frame_transformer_name, None)
         if isinstance(sensor, FrameTransformerCfg):
-            names.extend(frame.name for frame in sensor.target_frames)
-    assert all(names) and len(names) == len(
-        set(names)
-    ), "Recorded frame targets must have explicit, unique names in the scene"
+            for frame in sensor.target_frames:
+                assert frame.name, f"Recorded frame in '{term.frame_transformer_name}' needs an explicit name"
+                assert frame.name not in owners, (
+                    f"Recorded frame '{frame.name}' is shared by '{owners.get(frame.name)}' "
+                    f"and '{term.frame_transformer_name}'"
+                )
+                owners[frame.name] = term.frame_transformer_name
