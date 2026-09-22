@@ -50,7 +50,8 @@ def _test_instance_configurations(simulation_app):
     implicit_target = unnamed.scene_config.ee_frame.target_frames[0].prim_path.rsplit("/", 1)[-1]
     assert unnamed.get_scene_cfg().unnamed_ee_frame.target_frames[0].name == f"unnamed_{implicit_target}"
     original_frames = [frame.name for frame in original.get_scene_cfg().ee_frame.target_frames]
-    assert len(original_frames) == 3
+    assert original_frames == ["end_effector", "tool_rightfinger", "tool_leftfinger"]
+    assert {variation.camera_name for variation in original.get_variations()} == {"wrist_cam"}
     for robot, key in ((left, "left"), (right, "right")):
         for _ in range(2):
             sensor = getattr(robot.get_scene_cfg(), f"{key}_ee_frame")
@@ -69,6 +70,7 @@ def _test_instance_configurations(simulation_app):
     left_scene = left.get_scene_cfg()
     left_scene.left.init_state.pos = (99.0, 0.0, 0.0)
     assert left.get_scene_cfg().left.init_state.pos != left_scene.left.init_state.pos
+    assert left.get_scene_cfg().left.init_state.pos == (-1.0, 0.0, 0.0)
     assert right.scene_config.robot.prim_path == "{ENV_REGEX_NS}/Robot"
     assert original.get_observation_cfg().to_dict() == saved
     for getter, attribute in (
@@ -82,13 +84,22 @@ def _test_instance_configurations(simulation_app):
     invalid.policy.joint_pos.params = {}
     with pytest.raises(AssertionError, match="joint_pos.*asset_cfg.*robot"):
         rename_instance_cfg(invalid, "left", ("robot", "ee_frame"), ("arm_action", "gripper_action"), "observations")
-    g1 = AssetRegistry().get_asset_by_name("g1_wbc_joint")(instance_key="humanoid")
-    with pytest.raises(AssertionError, match="literal action-term lookup 'g1_action'"):
-        g1.get_events_cfg()
+    with pytest.raises(AssertionError, match="G1 controllers do not support an instance key"):
+        AssetRegistry().get_asset_by_name("g1_wbc_joint")(instance_key="humanoid")
+    for key in ("robot_left", "robotics"):
+        named = FrankaJointPosEmbodiment(instance_key=key, enable_cameras=True)
+        assert getattr(named.get_scene_cfg(), key).prim_path == f"{{ENV_REGEX_NS}}/{key.capitalize()}"
+    invalid_root = FrankaJointPosEmbodiment(instance_key="unsupported")
+    invalid_root.scene_config.robot.prim_path = "/World/envs/env_.*/Robot"
+    with pytest.raises(AssertionError, match="primary robot root"):
+        invalid_root.get_scene_cfg()
     left.action_config.gripper_action = None
     assert left.get_observation_cfg().left_policy.actions.params["action_names"] == ("left_arm_action",)
     with pytest.raises(AssertionError, match="lowercase ASCII"):
-        FrankaJointPosEmbodiment(instance_key="Left").get_scene_cfg()
+        FrankaJointPosEmbodiment(instance_key="Left")
+    for key in ("", "robot", "class", "two robots", 1):
+        with pytest.raises(AssertionError, match="Instance key"):
+            FrankaJointPosEmbodiment(instance_key=key)
     import torch
     from types import SimpleNamespace
 
@@ -117,6 +128,24 @@ def _test_instance_configurations(simulation_app):
         invalid.policy.joint_pos.func = func
         with pytest.raises(AssertionError, match=message):
             rename_instance_cfg(invalid, "left", ("robot", "ee_frame"), ("arm_action",), "observations")
+
+    def nested_default(env, bindings=(SceneEntityCfg("robot"),)):
+        return bindings
+
+    class ConstructorDefault:
+        def __init__(self, cfg, env, asset_cfg=SceneEntityCfg("robot")):
+            self.asset_cfg = asset_cfg
+
+        def __call__(self, env):
+            return self.asset_cfg
+
+    for func in (nested_default, ConstructorDefault):
+        invalid.policy.joint_pos.func = func
+        with pytest.raises(AssertionError, match="default references 'robot'"):
+            rename_instance_cfg(invalid, "left", ("robot", "ee_frame"), ("arm_action",), "observations")
+    invalid.policy.joint_pos.func = len
+    with pytest.raises(AssertionError, match="cannot inspect keyed term body"):
+        rename_instance_cfg(invalid, "left", ("robot", "ee_frame"), ("arm_action",), "observations")
     # The explicit parameter remains an ordinary Isaac Lab entity configuration.
     assert isinstance(left.get_observation_cfg().left_policy.joint_pos.params["asset_cfg"], SceneEntityCfg)
     return True
