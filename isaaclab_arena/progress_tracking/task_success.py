@@ -17,15 +17,11 @@ from isaaclab_arena.tasks.predicates.object_settling import reset_rest_pose_reco
 
 
 class TaskSuccessTerm(ManagerTermBase):
-    """Determine task success using ProgressTracker.
+    """Own task progress and report success for directly configured termination terms.
 
-    ArenaEnvBuilder registers this term with Isaac Lab's TerminationManager.
-    TaskSuccessTerm creates and owns ProgressTracker. TerminationManager
-    calls this term to update progress and check the task's success
-    requirements. Tracked objectives are recorded without affecting success.
-    With no success objectives, this term always returns false.
-    On episode resets, TerminationManager calls
-    this term's reset() to clear progress for the restarting environments.
+    The builder uses the nonterminating subclass to preserve progress when automatic
+    success termination is disabled. Both owners reset progress and initial resting
+    positions through the termination manager.
     """
 
     def __init__(self, cfg: TerminationTermCfg, env):
@@ -65,3 +61,32 @@ class TaskSuccessTerm(ManagerTermBase):
         # TODO(cvolk): Consider a shared Arena reset hook in IsaacLabArenaManagerBasedRLEnv.
         # Revisit this if ObjectInitialRestPoseRecorder is used independently of task success.
         reset_rest_pose_recorder(self._env, selected_env_ids)
+
+
+class TaskProgressTerm(TaskSuccessTerm):
+    """Advance and reset task progress without terminating an episode."""
+
+    def __call__(
+        self,
+        env,
+        success_objectives: list[ProgressObjective],
+        subtasks_are_sequential: bool = False,
+        desired_subtask_success_state: list[bool | None] | None = None,
+        tracked_objectives: list[ProgressObjective] | None = None,
+    ) -> torch.Tensor:
+        success = super().__call__(
+            env,
+            success_objectives,
+            subtasks_are_sequential,
+            desired_subtask_success_state,
+            tracked_objectives,
+        )
+        return torch.zeros_like(success)
+
+
+def task_success(env) -> torch.Tensor:
+    """Return the success result already computed by the progress owner."""
+    tracker = env.progress_tracker
+    assert tracker is not None, "The progress owner must initialize the tracker before checking success."
+    assert tracker.has_success_criteria, "Task success requires at least one success objective."
+    return tracker.is_complete()
