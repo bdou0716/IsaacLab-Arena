@@ -155,6 +155,18 @@ def _test_policy_values(simulation_app):
         action_space=gym.vector.utils.batch_space(single_space, 2),
     )
     env.unwrapped = env
+    from isaaclab_arena.utils.observation_bindings import ObservationBinding
+
+    env.cfg = SimpleNamespace(
+        observation_bindings=[
+            ObservationBinding("left_policy", None, "left", "policy"),
+            ObservationBinding("right_policy", None, "right", "policy"),
+            ObservationBinding("policy", None, "robot", "policy"),
+            ObservationBinding("camera_obs", "left_wrist", "left", "camera_obs", "wrist"),
+            ObservationBinding("camera_obs", "right_wrist", "right", "camera_obs", "wrist"),
+            ObservationBinding("camera_obs", "wrist", "robot", "camera_obs", "wrist"),
+        ]
+    )
     left = robot_last_action(env, ("left_arm", "left_gripper"))
     right = robot_last_action(env, ("right_arm", "right_gripper"))
     humanoid = robot_last_action(env, ("drive",))
@@ -190,15 +202,6 @@ def _test_policy_values(simulation_app):
             assert view.single_action_space.shape == self.expected.shape[1:]
             torch.testing.assert_close(observation["policy"]["actions"], self.expected)
             torch.testing.assert_close(observation["camera_obs"]["wrist"], self.expected[:, :1])
-            torch.testing.assert_close(view.action_manager.action, self.expected)
-            torch.testing.assert_close(view.action_manager.prev_action, self.expected + 30)
-            start = 0
-            for name, width in zip(view.action_manager.active_terms, view.action_manager.action_term_dim):
-                term = view.action_manager.get_term(name)
-                expected = self.expected[:, start : start + width]
-                torch.testing.assert_close(term.raw_actions, expected)
-                torch.testing.assert_close(term.processed_actions, expected * 10)
-                start += width
             return self.expected + self.offset
 
         def reset(self, indices=None):
@@ -316,3 +319,131 @@ def _test_cleanup_failures(simulation_app):
 
 def test_policy_failures_release_all_constructed_children():
     assert run_function_with_persistent_simulation_app(_test_cleanup_failures)
+
+
+def _test_observation_ownership(simulation_app):
+    import torch
+
+    from isaaclab.managers import ObservationGroupCfg, ObservationTermCfg
+
+    from isaaclab_arena.embodiments.franka.franka import FrankaJointPosEmbodiment
+    from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
+    from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
+    from isaaclab_arena.policy.multi_robot_policy import _robot_observation, _stack_observations
+    from isaaclab_arena.tests.test_multi_embodiment_environment import make_two_robot_definition
+    from isaaclab_arena.utils.configclass import make_configclass
+    from isaaclab_arena.utils.observation_bindings import ObservationBinding
+    from isaaclab_arena.utils.pose import Pose
+
+    definition = make_two_robot_definition()
+    definition.embodiments = [
+        FrankaJointPosEmbodiment(instance_key=key, enable_cameras=True, initial_pose=Pose.identity())
+        for key in ("left", "left_wrist")
+    ]
+    group = make_configclass(
+        "SharedGoal",
+        [("goal", ObservationTermCfg, ObservationTermCfg(func=lambda env: None))],
+        bases=(ObservationGroupCfg,),
+    )()
+    task_cfg = make_configclass(
+        "TaskObservations",
+        [
+            ("shared_goal", type(group), group),
+            ("task_owned", type(group), group),
+        ],
+    )()
+    definition.task.get_observation_cfg = lambda: task_cfg
+    definition.task.get_observation_bindings = lambda: [ObservationBinding("task_owned", None, "left", "task_goal")]
+    cfg, _ = ArenaEnvBuilder(definition, ArenaEnvBuilderCfg(solve_relations=False)).compose_manager_cfg()
+    bindings = cfg.observation_bindings
+    observation = {}
+    for index, binding in enumerate(bindings):
+        value = torch.full((2, 1), float(index))
+        if binding.source_term is None:
+            observation[binding.source_group] = value
+        else:
+            observation.setdefault(binding.source_group, {})[binding.source_term] = value
+    left = _robot_observation(observation, "left", bindings)
+    right = _robot_observation(observation, "left_wrist", bindings)
+    assert left["shared_goal"] is right["shared_goal"]
+    assert "task_goal" in left and "task_goal" not in right
+    assert set(left["camera_obs"]) == set(right["camera_obs"])
+    for camera in left["camera_obs"]:
+        assert not torch.equal(left["camera_obs"][camera], right["camera_obs"][camera])
+    with pytest.raises(AssertionError, match="matching observation groups"):
+        _stack_observations([left, right], 2)
+    with pytest.raises(AssertionError, match="match runtime observations"):
+        _robot_observation({**observation, "unbound": torch.ones(2, 1)}, "left", bindings)
+    source_actions = torch.ones(2, 1)
+    source_group = {"actions": source_actions}
+    collision_observation = {"owned": source_group, "camera_obs": {"image": torch.zeros(2, 1)}}
+    collision_bindings = [
+        ObservationBinding("owned", None, "left", "policy"),
+        ObservationBinding("camera_obs", "image", "left", "policy", "image"),
+    ]
+    for ordered_bindings in (collision_bindings, collision_bindings[::-1]):
+        with pytest.raises(AssertionError, match="Duplicate local observation group"):
+            _robot_observation(collision_observation, "left", ordered_bindings)
+        assert set(source_group) == {"actions"}
+        assert collision_observation["owned"] is source_group
+        assert source_group["actions"] is source_actions
+    return True
+
+
+@pytest.mark.with_cameras
+def test_explicit_observation_owners_survive_overlapping_robot_names():
+    assert run_function_with_persistent_simulation_app(_test_observation_ownership, enable_cameras=True)
+
+
+def _test_child_configuration(simulation_app):
+    from dataclasses import dataclass
+    from unittest.mock import patch
+
+    from isaaclab_arena.assets.registries import PolicyRegistry
+    from isaaclab_arena.policy.multi_robot_policy import MultiRobotPolicy, MultiRobotPolicyCfg
+    from isaaclab_arena.policy.policy_base import PolicyCfg
+    from isaaclab_arena.policy.zero_action_policy import ZeroActionPolicy
+
+    @dataclass
+    class TypedChildCfg(PolicyCfg):
+        count: int = 1
+
+    def build(selector, params):
+        return MultiRobotPolicy(
+            MultiRobotPolicyCfg(
+                policies={"child": {"type": selector, "params": params}},
+                assignments={"left": "child"},
+            )
+        )
+
+    registry = PolicyRegistry()
+    assert registry.resolve_policy_type("zero_action") is ZeroActionPolicy
+    with patch("importlib.import_module", side_effect=AssertionError("Unexpected selector import")):
+        assert (
+            registry.resolve_policy_type("isaaclab_arena.policy.zero_action_policy.ZeroActionPolicy")
+            is ZeroActionPolicy
+        )
+        with pytest.raises(AssertionError, match="one registered policy"):
+            registry.resolve_policy_type("unregistered_policy_package.CustomPolicy")
+    with patch.object(PolicyRegistry, "get_policy_cfg_type", return_value=TypedChildCfg):
+        policy = build("isaaclab_arena.policy.zero_action_policy.ZeroActionPolicy", {"count": "3"})
+        assert type(policy.policies["child"]) is ZeroActionPolicy
+        assert policy.policies["child"].config.count == 3
+        policy.close()
+        for params in ({"count": "invalid"}, {"unknown": 1}, {"defaults": [], "unknown": 1}):
+            with pytest.raises(ValueError, match="child policy 'child'"):
+                build("zero_action", params)
+    for selector in (
+        "multi_robot",
+        "isaaclab_arena.policy.multi_robot_policy.MultiRobotPolicy",
+    ):
+        with pytest.raises(AssertionError, match="Nested"):
+            build(selector, {})
+    for selector in ("rsl_rl", "isaaclab_arena.policy.rsl_rl_action_policy.RslRlActionPolicy"):
+        with pytest.raises(AssertionError, match="full environment wrapper"):
+            build(selector, {"checkpoint_path": "unused.pt"})
+    return True
+
+
+def test_child_parameters_use_typed_schema_and_class_resolution():
+    assert run_function_with_persistent_simulation_app(_test_child_configuration)

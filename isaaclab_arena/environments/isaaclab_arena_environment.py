@@ -42,7 +42,7 @@ class IsaacLabArenaEnvironment:
         Args:
             name: The name of the environment.
             scene: The scene to use in the environment.
-            embodiment: The embodiment to use in the environment.
+            embodiment: The single robot. Mutually exclusive with the robot list.
             task: The task to use in the environment.
             teleop_device: The teleop device to use in the environment.
             env_cfg_callback: A callback that tunes the environment configuration after the
@@ -60,7 +60,8 @@ class IsaacLabArenaEnvironment:
             placer_params: Object placement configuration. When None, default
                 ObjectPlacerParams are used.
             default_physics_backend: Default physics backend when ``--presets`` is omitted.
-            embodiments: Robots in action-tensor order. Mutually exclusive with ``embodiment``.
+            embodiments: Robots in action-column order. Each robot's declared action terms
+                are concatenated in list order. Mutually exclusive with ``embodiment``.
         """
         self.name = name
         self.scene = scene
@@ -88,7 +89,7 @@ class IsaacLabArenaEnvironment:
 
     @property
     def embodiment(self) -> EmbodimentBase | None:
-        """Return the sole robot, or None when the environment has no robots."""
+        """Return the sole robot or None; assert when several robots are configured."""
         assert len(self.embodiments) <= 1, "Use embodiments for an environment with several robots"
         return self.embodiments[0] if self.embodiments else None
 

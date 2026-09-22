@@ -16,7 +16,7 @@ from isaaclab_tasks.contrib.stack.mdp.franka_stack_events import randomize_objec
 
 from isaaclab_arena.assets.object_type import ObjectType
 from isaaclab_arena.relations.placement_asset import PlaceableAsset
-from isaaclab_arena.terms.events import set_object_pose, set_object_pose_per_env
+from isaaclab_arena.terms.events import reset_articulation_pose_and_joints, set_object_pose, set_object_pose_per_env
 from isaaclab_arena.utils.pose import Pose, PosePerEnv, PoseRange
 from isaaclab_arena.utils.velocity import Velocity
 from isaaclab_arena.variations.object_mass_variation import ObjectMassVariation
@@ -102,14 +102,20 @@ class RootedObjectBase(ObjectBase):
             self.object_cfg.init_state.ang_vel = velocity.angular_xyz
         self._pose_event_cfg = self._build_reset_event()
 
+    def has_pose_reset_event(self) -> bool:
+        """Return whether the stored reset event changes the root pose."""
+        event = self._pose_event_cfg
+        return event is not None and (
+            event.func is not reset_articulation_pose_and_joints or event.params["pose"] is not None
+        )
+
     def _requires_reset_pose_event(self) -> bool:
         """Whether a reset-event for the initial pose should be generated.
 
         Subclasses may override to add extra conditions (e.g. a ``reset_pose`` flag).
         """
-        return self.get_initial_pose() is not None and self.object_type in (
-            ObjectType.RIGID,
-            ObjectType.ARTICULATION,
+        return self.object_type == ObjectType.ARTICULATION or (
+            self.get_initial_pose() is not None and self.object_type == ObjectType.RIGID
         )
 
     def _build_reset_event(self) -> EventTermCfg | None:
@@ -118,6 +124,16 @@ class RootedObjectBase(ObjectBase):
             return None
 
         initial_pose = self.get_initial_pose()
+        if self.object_type == ObjectType.ARTICULATION:
+            return EventTermCfg(
+                func=reset_articulation_pose_and_joints,
+                mode="reset",
+                params={
+                    "asset_cfg": SceneEntityCfg(self.name),
+                    "pose": initial_pose,
+                    "velocity": self.initial_velocity,
+                },
+            )
         if isinstance(initial_pose, PosePerEnv):
             return EventTermCfg(
                 func=set_object_pose_per_env,

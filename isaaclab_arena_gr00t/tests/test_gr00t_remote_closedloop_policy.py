@@ -326,6 +326,18 @@ def test_shared_policy_sizes_remote_state_from_its_robot_batch(
     )
     env = _environment()
     env.device = "cpu"
+    from isaaclab_arena.utils.observation_bindings import ObservationBinding
+
+    env.cfg = SimpleNamespace(
+        observation_bindings=[
+            binding
+            for key in ("left", "right")
+            for binding in (
+                ObservationBinding(f"{key}_policy", None, key, "policy"),
+                ObservationBinding("camera_obs", f"{key}_robot_head_cam_rgb", key, "camera_obs", "robot_head_cam_rgb"),
+            )
+        ]
+    )
     env.single_action_space = gym.spaces.Box(-1.0, 1.0, (2 * EXPECTED_ACTION_DIM,))
     env.action_space = gym.vector.utils.batch_space(env.single_action_space, NUM_ENVS)
     terms = {f"{key}_action": SimpleNamespace(cfg=SimpleNamespace(asset_name=key)) for key in ("left", "right")}

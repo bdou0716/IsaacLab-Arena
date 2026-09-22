@@ -7,7 +7,9 @@
 
 Configuration classes are unchanged by the instance-key contribution. This fixture
 reconstructs their original initialization and getters independently of the changed
-Franka constructor and getter implementations.
+Franka constructor and getter implementations. Inherited variation and frame helpers
+are shared with the current implementation; fixed-value assertions cover those helpers.
+Keep this fixture pinned when changing the production constructor or getters.
 """
 
 from typing import Any

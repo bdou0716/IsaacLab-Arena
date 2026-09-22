@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -107,12 +106,4 @@ def _resolve_policy_cfg_type_from_name_or_class_path(policy_name_or_class_path: 
     from isaaclab_arena.assets.registries import PolicyRegistry
 
     registry = PolicyRegistry()
-    if registry.is_registered(policy_name_or_class_path):
-        policy_type = registry.get_policy(policy_name_or_class_path)
-    else:
-        assert (
-            "." in policy_name_or_class_path
-        ), f"Policy type must be a registered name or dotted Python class path, got {policy_name_or_class_path!r}"
-        module_path, class_name = policy_name_or_class_path.rsplit(".", 1)
-        policy_type = getattr(import_module(module_path), class_name)
-    return registry.get_policy_cfg_type(policy_type)
+    return registry.get_policy_cfg_type(registry.resolve_policy_type(policy_name_or_class_path))

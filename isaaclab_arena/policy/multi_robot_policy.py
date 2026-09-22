@@ -12,12 +12,16 @@ import numpy as np
 import torch
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from typing import Any
+
+from hydra.errors import HydraException
+from omegaconf.errors import OmegaConfBaseException
 
 from isaaclab_arena.assets.register import register_policy
 from isaaclab_arena.assets.registries import PolicyRegistry
+from isaaclab_arena.hydra.typed_config import compose_typed_config
 from isaaclab_arena.policy.policy_base import PolicyBase, PolicyCfg
+from isaaclab_arena.utils.observation_bindings import ObservationBinding
 
 
 @dataclass
@@ -39,6 +43,7 @@ class _PolicyBinding:
     num_envs: int
     layouts: dict[str, list[tuple[str, slice]]]
     views: dict[str, tuple[list[str], _RobotEnvView]]
+    observations: tuple[ObservationBinding, ...]
 
 
 @register_policy
@@ -48,23 +53,34 @@ class MultiRobotPolicy(PolicyBase[MultiRobotPolicyCfg]):
     name = "multi_robot"
 
     def __init__(self, config: MultiRobotPolicyCfg):
+        from isaaclab_arena.policy.rsl_rl_action_policy import RslRlActionPolicy
+
         super().__init__(config)
         assert config.assignments, "Assign at least one robot to an inner policy"
         assert set(config.assignments.values()) == set(config.policies), "Every policy must have assigned robots"
         registry = PolicyRegistry()
         self.policies = {}
         with ExitStack() as cleanup:
-            for name, definition in config.policies.items():
+            for index, (name, definition) in enumerate(config.policies.items()):
                 assert (
                     set(definition) <= {"type", "params"} and "type" in definition
                 ), "Inner policy needs type and params"
-                assert definition["type"] != self.name, "Nested multi-robot policies are not supported"
                 params = definition.get("params", {})
                 assert isinstance(params, dict) and _primitive(
                     params
                 ), "Inner policy parameters must be primitive values"
-                policy_type = registry.get_policy(definition["type"])
-                self.policies[name] = policy_type(registry.get_policy_cfg_type(policy_type)(**params))
+                policy_type = registry.resolve_policy_type(definition["type"])
+                assert not issubclass(policy_type, MultiRobotPolicy), "Nested multi-robot policies are not supported"
+                assert not issubclass(
+                    policy_type, RslRlActionPolicy
+                ), "RSL-RL policies require a full environment wrapper and cannot use a robot view"
+                try:
+                    child_cfg = compose_typed_config(
+                        registry.get_policy_cfg_type(policy_type), params, f"arena_multi_robot_child_{index}"
+                    )
+                except (HydraException, OmegaConfBaseException, TypeError, ValueError) as exc:
+                    raise ValueError(f"Invalid parameters for child policy '{name}': {exc}") from exc
+                self.policies[name] = policy_type(child_cfg)
                 cleanup.callback(self.policies[name].close)
             cleanup.pop_all()
         self._binding: _PolicyBinding | None = None
@@ -82,12 +98,21 @@ class MultiRobotPolicy(PolicyBase[MultiRobotPolicyCfg]):
             column += width
         assert column == env.action_space.shape[-1], "Action manager widths must cover the action space"
         assert all(layouts.values()), "Every assigned robot must own at least one action term"
+        observations = tuple(env.unwrapped.cfg.observation_bindings)
+        assert observations, "The environment must declare observation bindings for composite policies"
+        assert len({binding.source for binding in observations}) == len(
+            observations
+        ), "Observation bindings must be unique"
+        for binding in observations:
+            assert (
+                binding.robot_key is None or binding.robot_key in layouts
+            ), f"Observation '{binding.source}' has no policy assignment for '{binding.robot_key}'"
         views = {}
         for name in self.policies:
             keys = [key for key, assigned in self.config.assignments.items() if assigned == name]
-            manager_view = _RobotActionManager(manager, keys, layouts)
+            manager_view = _RobotActionManager(keys, layouts)
             views[name] = (keys, _RobotEnvView(env.unwrapped, manager_view, len(keys)))
-        return _PolicyBinding(env, env.unwrapped.num_envs, layouts, views)
+        return _PolicyBinding(env, env.unwrapped.num_envs, layouts, views, observations)
 
     def get_action(self, env, observation):
         """Batch each policy's robot observations and scatter its returned actions."""
@@ -98,7 +123,7 @@ class MultiRobotPolicy(PolicyBase[MultiRobotPolicyCfg]):
         output = torch.empty(env.action_space.shape, device=env.unwrapped.device)
         for name, policy in self.policies.items():
             keys, view = binding.views[name]
-            robot_observations = [_robot_observation(observation, key, tuple(self.config.assignments)) for key in keys]
+            robot_observations = [_robot_observation(observation, key, binding.observations) for key in keys]
             observations = _stack_observations(robot_observations, binding.num_envs)
             actions = policy.get_action(view, observations)
             expected = (view.num_envs, view.action_manager.total_action_dim)
@@ -185,8 +210,7 @@ class _RobotEnvView:
 class _RobotActionManager:
     """Present corresponding action terms stacked over robots, then environments."""
 
-    def __init__(self, manager, keys, layouts):
-        self._manager = manager
+    def __init__(self, keys, layouts):
         self._layouts = [layouts[key] for key in keys]
         self.active_terms = [_strip_prefix(name, keys[0]) for name, _ in self._layouts[0]]
         self.action_term_dim = [columns.stop - columns.start for _, columns in self._layouts[0]]
@@ -199,52 +223,39 @@ class _RobotActionManager:
             ] == self.action_term_dim, "Shared policies need matching action widths"
         self.total_action_dim = sum(self.action_term_dim)
 
-    @property
-    def action(self):
-        """Read current actions in robot-major row order."""
-        return self._robot_rows(self._manager.action)
-
-    @property
-    def prev_action(self):
-        """Read previous actions in robot-major row order."""
-        return self._robot_rows(self._manager.prev_action)
-
-    def _robot_rows(self, actions):
-        """Select owned columns and concatenate robot batches."""
-        return torch.cat(
-            [torch.cat([actions[:, columns] for _, columns in layout], dim=-1) for layout in self._layouts]
-        )
-
-    def get_term(self, name):
-        """Expose the corresponding raw and processed action terms across robots."""
-        index = self.active_terms.index(name)
-        terms = [self._manager.get_term(layout[index][0]) for layout in self._layouts]
-        return SimpleNamespace(
-            raw_actions=torch.cat([term.raw_actions for term in terms]),
-            processed_actions=torch.cat([term.processed_actions for term in terms]),
-        )
-
 
 def _strip_prefix(name, key):
     """Restore the term name expected by a single-robot policy."""
     return name.removeprefix(f"{key}_") if key != "robot" else name
 
 
-def _robot_observation(observation, key, keys):
-    """Select one robot's groups and cameras using the longest matching prefix."""
-
-    def owner(name):
-        matches = [other for other in keys if other != "robot" and name.startswith(f"{other}_")]
-        return max(matches, key=len) if matches else "robot"
-
+def _robot_observation(observation, key, bindings):
+    """Select owned and shared observations using declared source and local names."""
+    sources = {
+        (name, term)
+        for name, value in observation.items()
+        for term in (value if name == "camera_obs" and isinstance(value, dict) else [None])
+    }
+    assert sources == {
+        binding.source for binding in bindings
+    }, "Observation bindings must match runtime observations; update bindings when changing observation groups"
     result = {}
-    for name, value in observation.items():
-        if name == "camera_obs":
-            cameras = {_strip_prefix(camera, key): image for camera, image in value.items() if owner(camera) == key}
-            if cameras:
-                result[name] = cameras
-        elif owner(name) == key:
-            result[_strip_prefix(name, key)] = value
+    whole_groups = set()
+    for binding in bindings:
+        if binding.robot_key not in (None, key):
+            continue
+        value = observation[binding.source_group]
+        if binding.source_term is None:
+            assert binding.local_group not in result, f"Duplicate local observation group '{binding.local_group}'"
+            result[binding.local_group] = value
+            whole_groups.add(binding.local_group)
+        else:
+            assert binding.local_group not in whole_groups, f"Duplicate local observation group '{binding.local_group}'"
+            group = result.setdefault(binding.local_group, {})
+            assert (
+                isinstance(group, dict) and binding.local_term not in group
+            ), f"Duplicate local observation term '{binding.local_group}/{binding.local_term}'"
+            group[binding.local_term] = value[binding.source_term]
     assert result, f"No observation groups found for robot '{key}'"
     return result
 

@@ -56,6 +56,7 @@ class G1EmbodimentBase(EmbodimentBase):
         arm_mode: ArmMode | None = None,
         instance_key: str | None = None,
     ):
+        assert instance_key is None, "G1 controllers do not support an instance key"
         super().__init__(
             enable_cameras, initial_pose, concatenate_observation_terms, arm_mode, instance_key=instance_key
         )

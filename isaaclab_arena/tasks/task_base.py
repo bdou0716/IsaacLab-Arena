@@ -16,6 +16,7 @@ from isaaclab_arena.metrics.metric_base import MetricBase
 from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
 from isaaclab_arena.relations.relations import RequiresReachability
 from isaaclab_arena.tasks.task_transition import TaskTransition
+from isaaclab_arena.utils.observation_bindings import ObservationBinding
 
 
 class TaskBase(ABC):
@@ -48,6 +49,10 @@ class TaskBase(ABC):
 
     def get_observation_cfg(self) -> Any:
         return None
+
+    def get_observation_bindings(self) -> list[ObservationBinding]:
+        """Declare task observations owned by individual robots; other groups are shared."""
+        return []
 
     def get_rewards_cfg(self) -> Any:
         return None

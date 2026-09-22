@@ -221,6 +221,19 @@ class PolicyRegistry(Registry):
         ensure_assets_registered()
         return self.get_component_by_name(name)
 
+    def resolve_policy_type(self, name_or_class_path: str) -> type["PolicyBase"]:
+        """Resolve a registered policy name or its defining Python class path."""
+        ensure_assets_registered()
+        if name_or_class_path in self._components:
+            return self.get_policy(name_or_class_path)
+        matches = [
+            policy_type
+            for policy_type in self._cfg_types
+            if f"{policy_type.__module__}.{policy_type.__qualname__}" == name_or_class_path
+        ]
+        assert len(matches) == 1, f"Policy type must identify one registered policy, got {name_or_class_path!r}"
+        return matches[0]
+
 
 class HDRImageRegistry(Registry):
     """Registry for HDR/EXR environment map textures."""

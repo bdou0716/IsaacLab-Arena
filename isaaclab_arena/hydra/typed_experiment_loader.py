@@ -9,16 +9,16 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hydra import compose, initialize
+from hydra import compose
 from hydra.core.config_store import ConfigStore
-from hydra.core.global_hydra import GlobalHydra
 from hydra.errors import HydraException
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
+
+from isaaclab_arena.hydra.typed_config import compose_typed_config, hydra_context
 
 if TYPE_CHECKING:
     from isaaclab_arena.environments.arena_environment_factory import ArenaEnvironmentCfg
@@ -26,17 +26,6 @@ if TYPE_CHECKING:
     from isaaclab_arena.evaluation.arena_run import ArenaRunCfg
     from isaaclab_arena.evaluation.legacy_graph_environment_cli import LegacyGraphEnvironmentCfg
     from isaaclab_arena.policy.policy_base import PolicyCfg
-
-
-def _get_new_hydra_context_if_none_exists() -> AbstractContextManager[None]:
-    """Initialize Hydra only when composition has no caller-owned context.
-
-    Arena composes Experiments both standalone and from callers already using
-    Hydra. Existing caller state must remain intact.
-    """
-    if GlobalHydra.instance().is_initialized():
-        return nullcontext()
-    return initialize(version_base=None, config_path=None)
 
 
 def load_arena_experiment_from_yaml(
@@ -75,7 +64,7 @@ def load_arena_experiment_from_yaml(
     hydra_config_namespace = "isaaclab_arena_typed_experiment_loader"
 
     try:
-        with _get_new_hydra_context_if_none_exists():
+        with hydra_context():
             arena_runs_by_name = {
                 run_name: _build_arena_run_cfg_from_yaml_values(
                     config_store,
@@ -254,7 +243,6 @@ def _build_arena_run_cfg_from_yaml_values(
         if isinstance(policy_selector, str) and policy_selector:
             policy_cfg_types[policy_selector] = policy_cfg_type_resolver(policy_selector)
     policy = _compose_typed_config_from_yaml_selector(
-        config_store,
         hydra_policy_config_name,
         run_name,
         "policy",
@@ -296,7 +284,6 @@ def _build_environment_cfg_from_yaml_values(
         return _graph_environment_cfg_from_yaml_values(env_spec_path, per_run_overrides)
     else:
         return _compose_typed_config_from_yaml_selector(
-            config_store,
             hydra_environment_config_name,
             run_name,
             "environment",
@@ -344,7 +331,6 @@ def _graph_spec_yaml_path(environment_values: Any) -> str | None:
 
 
 def _compose_typed_config_from_yaml_selector(
-    config_store: ConfigStore,
     hydra_config_name: str,
     run_name: str,
     section_name: str,
@@ -358,7 +344,6 @@ def _compose_typed_config_from_yaml_selector(
     values are composed and validated against that class by Hydra.
 
     Args:
-        config_store: Hydra store used for the temporary typed schema.
         hydra_config_name: Unique name for the temporary Hydra config.
         run_name: Run containing the selected environment or policy.
         section_name: YAML section being composed, such as environment or policy.
@@ -384,10 +369,4 @@ def _compose_typed_config_from_yaml_selector(
         f"must inherit from {expected_base_type.__name__}"
     )
 
-    hydra_schema_name = f"{hydra_config_name}_schema"
-    config_store.store(name=hydra_schema_name, node=cfg_type)
-    config_store.store(
-        name=hydra_config_name,
-        node={"defaults": [hydra_schema_name, "_self_"], **values},
-    )
-    return OmegaConf.to_object(compose(config_name=hydra_config_name))
+    return compose_typed_config(cfg_type, values, hydra_config_name)

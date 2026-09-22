@@ -3,6 +3,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Freeze single-robot assembly at the pre-contribution revision.
+
+Inherited variation and recording helpers remain shared. Explicit expectations in
+the regression tests cover those helpers; this fixture isolates assembly changes.
+"""
+
 from __future__ import annotations
 
 from typing import Any
