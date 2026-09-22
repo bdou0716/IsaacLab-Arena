@@ -257,7 +257,7 @@ def _experiment_summary_line(summary: ExperimentSummary) -> str:
 
 
 def _render_funnel(funnel: ObjectiveFunnel) -> str:
-    if not funnel.stages and not funnel.show_empty:
+    if not funnel.stages and not funnel.render_when_empty:
         return ""
     rows = [] if funnel.stages else ['<p class="note">No predicate events recorded.</p>']
     for stage in funnel.stages:

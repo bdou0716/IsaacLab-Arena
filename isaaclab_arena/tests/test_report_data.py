@@ -270,7 +270,7 @@ def test_conflicting_subtask_sequences_stay_split_and_report_an_issue(second_gro
         ["first_predicate"],
         ["other_predicate"],
     ]
-    normalized_events = job._progress_episodes[episode.identity].record["progress"]["events"]
+    normalized_events = job._progress_episodes[(episode.env_index, episode.episode_index)].record["progress"]["events"]
     assert normalized_events[0]["group"] is None
     assert normalized_events[1]["group"] == second_group
 
@@ -540,7 +540,7 @@ def test_run_status_normalizes_enum_like_values():
     assert normalize_run_status(Status()) == "failed"
 
 
-def test_legacy_single_group_keeps_eventless_episodes_in_the_denominator():
+def test_missing_attribution_keeps_eventless_episodes_in_the_single_group_denominator():
     complete = _episode({"progress": _progress({"reach": 1}, [("reach", 0, "arrive")], 1.0)})
     stalled = _episode(
         {
@@ -592,16 +592,16 @@ def test_explicit_empty_group_preserves_an_eventless_sibling():
     original = deepcopy(episode.record)
     job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[episode])
 
-    assert [(funnel.name, funnel.num_instances) for funnel in job.funnels] == [("reach/", 1), ("reach/right", 1)]
+    assert [(funnel.name, funnel.num_instances) for funnel in job.funnels] == [('reach/""', 1), ("reach/right", 1)]
     assert job.funnels[0].stages[0].num_reached == 1
     assert job.funnels[1].stages == []
-    assert job.funnels[1].show_empty
+    assert job.funnels[1].render_when_empty
     assert job.objectives_for(episode)[0].blocked_predicates == ["right/arrive"]
     assert episode.record == original
 
 
-def test_legacy_and_named_single_group_events_share_one_denominator():
-    legacy = _episode({"progress": _progress({"reach": 1}, [("reach", 0, "arrive")], 1.0)})
+def test_missing_and_named_single_group_events_share_one_denominator():
+    unattributed = _episode({"progress": _progress({"reach": 1}, [("reach", 0, "arrive")], 1.0)})
     named = _episode(
         {
             "progress": {
@@ -611,28 +611,35 @@ def test_legacy_and_named_single_group_events_share_one_denominator():
         },
         episode=1,
     )
-    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[legacy, named])
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[unattributed, named])
 
     assert len(job.funnels) == 1
     assert job.funnels[0].num_instances == 2
     assert job.funnels[0].stages[0].num_reached == 2
-    assert job.objectives_for(legacy)[0].signals[0].triggered
+    assert job.objectives_for(unattributed)[0].signals[0].triggered
     assert not job.issues
 
 
-def test_ambiguous_missing_group_is_reported_without_assigning_an_event():
-    episode = _episode({
-        "progress": {
-            "objectives": {"reach": {"active_predicates": {"": "arrive", "right": "arrive"}}},
-            "events": [{"objective": "reach", "predicate_index": 0, "predicate_name": "arrive"}],
-        }
-    })
+@pytest.mark.parametrize(("env", "episode_index"), [(0, 0), (2, 3)])
+def test_ambiguous_missing_group_is_reported_without_assigning_an_event(env, episode_index):
+    episode = _episode(
+        {
+            "progress": {
+                "objectives": {"reach": {"active_predicates": {"": "arrive", "right": "arrive"}}},
+                "events": [{"objective": "reach", "predicate_index": 0, "predicate_name": "arrive"}],
+            }
+        },
+        env=env,
+        episode=episode_index,
+    )
     job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[episode])
 
-    assert any("ambiguous missing group attribution" in issue.message for issue in job.issues)
+    assert [issue.message for issue in job.issues] == [
+        f"environment {env}, episode {episode_index}: objective 'reach' has ambiguous missing group attribution"
+    ]
     funnels = {funnel.name: funnel for funnel in job.funnels}
     assert funnels["reach/(unattributed)"].stages[0].num_reached == 1
-    assert funnels["reach/"].stages == funnels["reach/right"].stages == []
+    assert funnels['reach/""'].stages == funnels["reach/right"].stages == []
 
 
 def test_group_normalization_preserves_recorded_objective_order():
@@ -641,3 +648,132 @@ def test_group_normalization_preserves_recorded_objective_order():
     job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[episode])
 
     assert [objective.name for objective in job.objectives_for(episode)] == names
+
+
+@pytest.mark.parametrize("objective_names", [("reach", "reach"), ("subtask_0/reach", "subtask_1/reach")])
+@pytest.mark.parametrize("right_has_event", [False, True])
+def test_family_groups_qualify_signals_and_waiting_predicates_across_episodes(objective_names, right_has_event):
+    episodes = []
+    for index, (name, group) in enumerate(zip(objective_names, ("left", "right"))):
+        events = (
+            [{"objective": name, "group": group, "predicate_index": 0, "predicate_name": "arrive"}]
+            if group == "left" or right_has_event
+            else []
+        )
+        episodes.append(
+            _episode(
+                {
+                    "progress": {
+                        "objectives": {name: {"active_predicates": {group: "wait"}}},
+                        "events": events,
+                    }
+                },
+                episode=index,
+            )
+        )
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=episodes)
+
+    assert [funnel.name for funnel in job.funnels] == ["reach/left", "reach/right"]
+    for episode, group in zip(episodes, ("left", "right")):
+        objective = job.objectives_for(episode)[0]
+        expected_signals = [f"{group}/arrive"] if group == "left" or right_has_event else []
+        assert [signal.name for signal in objective.signals] == expected_signals
+        assert objective.blocked_predicates == [f"{group}/wait"]
+
+
+def test_group_labels_distinguish_missing_empty_reserved_and_quoted_names():
+    groups = [None, "", "(unattributed)", '""', "left"]
+    labels = ["(unattributed)", '""', '"(unattributed)"', json.dumps('""'), "left"]
+    episode = _episode({
+        "progress": {
+            "objectives": {"reach": {"active_predicates": {group: None for group in groups if group is not None}}},
+            "events": [
+                {"objective": "reach", "group": group, "predicate_index": 0, "predicate_name": "arrive", "step": step}
+                for step, group in enumerate(groups)
+            ],
+        }
+    })
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[episode])
+
+    assert {funnel.name for funnel in job.funnels} == {f"reach/{label}" for label in labels}
+    assert all(funnel.stages[0].num_reached == 1 for funnel in job.funnels)
+    assert {signal.name: signal.step for signal in job.objectives_for(episode)[0].signals} == {
+        f"{label}/arrive": step for step, label in enumerate(labels)
+    }
+
+
+@pytest.mark.parametrize("group, label", [(None, "(unattributed)"), ("", '""'), ("left", "left")])
+def test_conflicting_predicate_names_identify_the_group(group, label):
+    episodes = [
+        _episode(
+            {
+                "progress": {
+                    "objectives": {"reach": {}},
+                    "events": [{"objective": "reach", "group": group, "predicate_index": 0, "predicate_name": name}],
+                }
+            },
+            episode=index,
+        )
+        for index, name in enumerate(("arrive", "settle"))
+    ]
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=episodes)
+
+    assert [issue.message for issue in job.issues] == [
+        f"objective family 'reach', group {label}, has multiple predicate names at index 0: ['arrive', 'settle']"
+    ]
+
+
+def test_completed_group_does_not_treat_null_as_an_active_predicate_name():
+    recorded = _episode({
+        "progress": {
+            "objectives": {"reach": {"active_predicates": {"left": None}}},
+            "events": [{"objective": "reach", "group": "left", "predicate_index": 0, "predicate_name": "None"}],
+        }
+    })
+    completed = _episode({"progress": {"objectives": {"reach": {"active_predicates": {"left": None}}}}}, episode=1)
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[recorded, completed])
+
+    objective = job.objectives_for(completed)[0]
+    assert not objective.signals[0].blocked
+    assert objective.blocked_predicates == []
+
+
+def test_mixed_rank_records_and_ambiguous_video_keep_distinct_progress(tmp_path):
+    for suffix, step in (("", 3), ("_rank0", 7)):
+        events = [
+            {"objective": "reach", "group": "left", "predicate_index": 0, "predicate_name": "arrive", "step": step}
+        ]
+        if suffix:
+            events.append(
+                {"objective": "reach", "group": "left", "predicate_index": 1, "predicate_name": "settle", "step": 11}
+            )
+        record = {
+            "env_id": 0,
+            "episode_in_env": 0,
+            "progress": {
+                "objectives": {"reach": {"score": 1.0 if suffix else 0.5}},
+                "events": events,
+            },
+        }
+        (tmp_path / f"episode_results_rebuild0{suffix}.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    video_name = format_episode_video_filename("robot-cam-rebuild0", 0, "wrist_cam", 0)
+    (tmp_path / video_name).write_bytes(b"")
+
+    summary = build_experiment_summary(tmp_path, "Report")
+
+    job = summary.jobs[0]
+    assert job.num_episodes == 3
+    assert [(episode.env_index, episode.episode_index) for episode in job.episodes] == [(0, 0), (0, 1), (0, 2)]
+    unranked, video_only, ranked = job.episodes
+    assert unranked.identity == video_only.identity
+    assert video_only.video_by_camera == {"wrist_cam": video_name}
+    assert not unranked.video_by_camera and not ranked.video_by_camera
+    assert job.objectives_for(video_only) == []
+    for episode, score, steps in ((unranked, 0.5, [3, None]), (ranked, 1.0, [7, 11])):
+        objective = job.objectives_for(episode)[0]
+        assert objective.score == score
+        assert [signal.step for signal in objective.signals] == steps
+    assert len(job.funnels) == 1
+    assert job.funnels[0].num_instances == 2
+    assert [stage.num_reached for stage in job.funnels[0].stages] == [2, 1]
+    assert any("leaving videos unpaired" in issue.message for issue in summary.issues)
