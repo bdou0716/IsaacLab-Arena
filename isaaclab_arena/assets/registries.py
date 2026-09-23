@@ -299,8 +299,17 @@ class EnvironmentRegistry(Registry):
         self._cfg_types_by_factory_type[factory_type] = cfg_type
         self._factory_types_by_cfg_type[cfg_type] = factory_type
 
-    # TODO(cvolk, 2026-07-07): [typed-config-migration] Remove this factory-to-config
-    # lookup and _cfg_types_by_factory_type when the legacy JSON adapter no longer
+    def get_environment_cfg_types(self) -> dict[str, type["ArenaEnvironmentCfg"]]:
+        """Return selectors for factories that registered typed configurations."""
+        ensure_assets_registered()
+        return {
+            name: self._cfg_types_by_factory_type[factory_type]
+            for name, factory_type in self._components.items()
+            if factory_type in self._cfg_types_by_factory_type
+        }
+
+    # TODO(cvolk, 2026-07-07): [typed-config-migration] Remove this single-factory
+    # lookup when the legacy JSON adapter no longer
     # resolves an environment name into its config type.
     def get_environment_cfg_type(
         self,
