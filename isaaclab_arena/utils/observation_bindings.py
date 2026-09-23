@@ -11,7 +11,8 @@ from typing import Any
 from isaaclab.managers import ObservationGroupCfg, ObservationTermCfg
 
 
-@dataclass(frozen=True)
+# Isaac Lab resolves strings inside nested configuration objects in place.
+@dataclass
 class ObservationBinding:
     """Map a composed observation to its owner and original controller name."""
 
