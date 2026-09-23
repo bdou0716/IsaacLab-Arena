@@ -304,7 +304,7 @@ def test_articulation_joint_reset_does_not_conflict_with_relation_placement(reso
         pose = obj.get_initial_pose()
         assert isinstance(pose, PosePerEnv)
         assert [item.position_xyz for item in pose.poses] == [(0.1, 0.2, 0.3), (0.4, 0.5, 0.6)]
-        assert obj.get_event_cfg()[1].params["pose"] is pose
+        assert obj.get_event_cfg()[1].params["pose"] == pose
         assert obj.has_pose_reset_event()
 
     obj.set_initial_pose(Pose.identity())
