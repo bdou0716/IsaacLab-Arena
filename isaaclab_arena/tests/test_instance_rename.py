@@ -7,6 +7,7 @@
 
 from functools import partial
 
+from isaaclab_arena.tests.utils.configuration_comparison import comparable_configuration
 from isaaclab_arena.tests.utils.persistent_simulation_app import run_function_with_persistent_simulation_app
 
 
@@ -226,19 +227,6 @@ def test_keyed_franka_steps():
     assert run_function_with_persistent_simulation_app(_test_keyed_franka_steps)
 
 
-def _comparable_configuration(value):
-    """Compare nested configurations and partially bound functions by their contents."""
-    if isinstance(value, partial):
-        return (partial, value.func, _comparable_configuration(value.args), _comparable_configuration(value.keywords))
-    if isinstance(value, dict):
-        return {key: _comparable_configuration(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return type(value)(_comparable_configuration(item) for item in value)
-    if not isinstance(value, type) and hasattr(value, "to_dict"):
-        return _comparable_configuration(value.to_dict())
-    return value
-
-
 def _test_nested_configuration_comparison(simulation_app):
     from isaaclab.managers import SceneEntityCfg
 
@@ -252,15 +240,15 @@ def _test_nested_configuration_comparison(simulation_app):
         bound = partial(func, *args, threshold=threshold, asset_cfg=SceneEntityCfg(asset_name))
         return {"objectives": [{"predicate_sequences": {"goal": [(bound, 1.0)]}}]}
 
-    expected = _comparable_configuration(configuration())
-    assert _comparable_configuration(configuration()) == expected
+    expected = comparable_configuration(configuration())
+    assert comparable_configuration(configuration()) == expected
     for changed in (
         configuration(func=other_predicate),
         configuration(args=(2,)),
         configuration(threshold=0.75),
         configuration(asset_name="other_robot"),
     ):
-        assert _comparable_configuration(changed) != expected
+        assert comparable_configuration(changed) != expected
     return True
 
 
@@ -288,7 +276,7 @@ def _test_unkeyed_reference(simulation_app):
     )
     actual, _ = ArenaEnvBuilder(actual_definition, cfg).compose_manager_cfg()
     expected, _ = ArenaEnvBuilder(reference_definition, cfg).compose_manager_cfg()
-    assert _comparable_configuration(actual.to_dict()) == _comparable_configuration(expected.to_dict())
+    assert comparable_configuration(actual.to_dict()) == comparable_configuration(expected.to_dict())
     return True
 
 

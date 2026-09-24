@@ -7,6 +7,7 @@
 
 import pytest
 
+from isaaclab_arena.tests.utils.configuration_comparison import comparable_configuration
 from isaaclab_arena.tests.utils.persistent_simulation_app import run_function_with_persistent_simulation_app
 
 
@@ -16,6 +17,7 @@ def make_two_robot_definition(enable_cameras=False, mixed=False, relations=False
     from isaaclab_arena.embodiments.franka.franka import FrankaJointPosEmbodiment
     from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
     from isaaclab_arena.relations.object_placer_params import ObjectPlacerParams
+    from isaaclab_arena.relations.relation_solver_params import RelationSolverParams
     from isaaclab_arena.relations.relations import AtPosition, IsAnchor
     from isaaclab_arena.scene.scene import Scene
     from isaaclab_arena.utils.pose import Pose
@@ -50,7 +52,10 @@ def make_two_robot_definition(enable_cameras=False, mixed=False, relations=False
         name="multi_robot_test",
         scene=Scene(assets=assets),
         embodiments=robots,
-        placer_params=ObjectPlacerParams(min_unique_layouts_per_env=1),
+        # Allow both robots to travel from the shared anchor to their requested positions.
+        placer_params=ObjectPlacerParams(
+            solver_params=RelationSolverParams(max_iters=4000), min_unique_layouts_per_env=1
+        ),
     )
 
 
@@ -212,7 +217,7 @@ def _test_single_compatibility(simulation_app):
     after_values, before_values = after.to_dict(), before.to_dict()
     after_values.pop("observation_bindings")
     before_values.pop("observation_bindings")
-    assert after_values == before_values
+    assert comparable_configuration(after_values) == comparable_configuration(before_values)
     assert {
         (binding.source_group, binding.robot_key, binding.local_group)
         for binding in after.observation_bindings
