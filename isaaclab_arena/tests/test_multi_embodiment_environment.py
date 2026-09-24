@@ -7,6 +7,7 @@
 
 import pytest
 
+from isaaclab_arena.tests.utils.configuration_comparison import comparable_configuration
 from isaaclab_arena.tests.utils.persistent_simulation_app import run_function_with_persistent_simulation_app
 
 
@@ -209,7 +210,7 @@ def _test_single_compatibility(simulation_app):
     after, _ = ArenaEnvBuilder(
         factory.build(CubeGoalPoseEnvironmentCfg(enable_cameras=True)), cfg
     ).compose_manager_cfg()
-    assert after.to_dict() == before.to_dict()
+    assert comparable_configuration(after.to_dict()) == comparable_configuration(before.to_dict())
     assert after.episode_recorders.core.params["embodiments"] == {"robot": "franka_ik"}
     return True
 
