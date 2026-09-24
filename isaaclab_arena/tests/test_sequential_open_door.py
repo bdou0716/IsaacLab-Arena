@@ -24,6 +24,7 @@ def get_test_environment(remove_reset_door_state_event: bool, num_envs: int):
     from isaaclab_arena.scene.scene import Scene
     from isaaclab_arena.tasks.open_door_task import OpenDoorTask
     from isaaclab_arena.tasks.sequential_task_base import SequentialTaskBase
+    from isaaclab_arena.terms.events import set_object_pose
     from isaaclab_arena.utils.pose import Pose
 
     args_parser = get_isaaclab_arena_cli_parser()
@@ -66,6 +67,9 @@ def get_test_environment(remove_reset_door_state_event: bool, num_envs: int):
     env_builder = ArenaEnvBuilder(isaaclab_arena_environment, arena_env_builder_cfg_from_argparse(args_cli))
     name, cfg, env_kwargs = env_builder.build_registered()
     if remove_reset_door_state_event:
+        # Restore the microwave body without resetting its door joints.
+        cfg.events.microwave_0.func = set_object_pose
+        cfg.events.microwave_1.func = set_object_pose
         # Remove the reset door and subtask state events to allow us to inspect the scene without having it reset.
         cfg.events.reset_door_state_subtask_0 = None
         cfg.events.reset_door_state_subtask_1 = None
