@@ -7,6 +7,7 @@
 
 import pytest
 
+from isaaclab_arena.tests.utils.configuration_comparison import comparable_configuration
 from isaaclab_arena.tests.utils.persistent_simulation_app import run_function_with_persistent_simulation_app
 
 
@@ -212,7 +213,7 @@ def _test_single_compatibility(simulation_app):
     after_values, before_values = after.to_dict(), before.to_dict()
     after_values.pop("observation_bindings")
     before_values.pop("observation_bindings")
-    assert after_values == before_values
+    assert comparable_configuration(after_values) == comparable_configuration(before_values)
     assert {
         (binding.source_group, binding.robot_key, binding.local_group)
         for binding in after.observation_bindings
