@@ -404,6 +404,24 @@ def test_explicit_policy_suffix_can_group_a_single_run(tmp_path):
     assert summary.tasks[0].job_for_policy("pi0") is not None
 
 
+def test_seed_numbers_are_not_inferred_as_policy_names(tmp_path):
+    for seed in (42, 43, 44):
+        _write_run(tmp_path, f"seed_{seed}", [{"env_id": 0, "episode_in_env": 0, "seed": seed}])
+
+    summary = build_experiment_summary(tmp_path, "Report")
+
+    assert summary.grouping_source == "none"
+    assert summary.policies == []
+    assert [job.name for job in summary.jobs] == ["seed_42", "seed_43", "seed_44"]
+
+
+def test_numeric_policy_names_can_be_declared_explicitly():
+    labels, source = _infer_task_and_policy_labels_with_source(["task_42", "task_43"], policy_suffixes=("42", "43"))
+
+    assert source == "policy_suffixes"
+    assert labels == {"task_42": ("task", "42"), "task_43": ("task", "43")}
+
+
 def test_summary_leaves_runs_ungrouped_when_no_labels_can_be_established(tmp_path):
     _write_run(tmp_path, "solo_run", [{"env_id": 0, "episode_in_env": 0, "success": True}])
 

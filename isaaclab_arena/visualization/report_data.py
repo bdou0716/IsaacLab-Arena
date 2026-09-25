@@ -128,7 +128,7 @@ class ObjectiveProgress:
     name: str
     family: str
     score: float
-    max_score: float
+    """Recorded objective progress as a fraction of one."""
     is_complete: bool
     signals: list[PredicateSignal]
     blocked_predicates: list[str] = field(default_factory=list)
@@ -282,13 +282,11 @@ class JobSummary:
                             blocked=blocked,
                         )
                     )
-            total_groups = _as_float(detail.get("total_groups")) if isinstance(detail, dict) else None
             results.append(
                 ObjectiveProgress(
                     name=name,
                     family=family,
                     score=_as_float(detail.get("score")) or 0.0 if isinstance(detail, dict) else 0.0,
-                    max_score=total_groups if total_groups and total_groups > 0 else 1.0,
                     is_complete=bool(detail.get("is_complete", False)) if isinstance(detail, dict) else False,
                     signals=signals,
                     blocked_predicates=[
@@ -790,7 +788,7 @@ def _infer_labels_from_repeated_final_tokens(job_names: list[str]) -> dict[str, 
     split_names: dict[str, tuple[str, str]] = {}
     for job_name in job_names:
         task, separator, policy = job_name.rpartition("_")
-        if not separator or not task or not policy:
+        if not separator or not task or not policy or policy.isdecimal():
             return None
         split_names[job_name] = (task, policy)
         final_tokens[policy] += 1

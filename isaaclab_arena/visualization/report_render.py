@@ -392,7 +392,7 @@ def _render_objective(objective) -> str:
     if objective.blocked_predicates:
         blocked = ", ".join(objective.blocked_predicates)
         track += f'<span class="signal blocked"><span class="glyph">&#9654;</span>{html.escape(blocked)}</span>'
-    score = f"{round(objective.score, 2):g} / {round(objective.max_score, 2):g}"
+    score = _percent(objective.score)
     family = "" if objective.family == objective.name else f'<span class="score">{html.escape(objective.family)}</span>'
     return (
         '<div class="objective"><div class="objective-head">'
