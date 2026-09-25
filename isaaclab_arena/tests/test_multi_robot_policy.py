@@ -330,6 +330,7 @@ def _test_observation_ownership(simulation_app):
     from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
     from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
     from isaaclab_arena.policy.multi_robot_policy import _robot_observation, _stack_observations
+    from isaaclab_arena.tasks.no_task import NoTask
     from isaaclab_arena.tests.test_multi_embodiment_environment import make_two_robot_definition
     from isaaclab_arena.utils.configclass import make_configclass
     from isaaclab_arena.utils.observation_bindings import ObservationBinding
@@ -352,6 +353,7 @@ def _test_observation_ownership(simulation_app):
             ("task_owned", type(group), group),
         ],
     )()
+    definition.task = NoTask()
     definition.task.get_observation_cfg = lambda: task_cfg
     definition.task.get_observation_bindings = lambda: [ObservationBinding("task_owned", None, "left", "task_goal")]
     cfg, _ = ArenaEnvBuilder(definition, ArenaEnvBuilderCfg(solve_relations=False)).compose_manager_cfg()
