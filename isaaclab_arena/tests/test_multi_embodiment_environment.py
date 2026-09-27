@@ -468,12 +468,33 @@ def _test_multiple_robots_accept_independent_composite_tasks(simulation_app):
 
     class ObservedTask(NoTask):
         def get_termination_cfg(self):
-            return TaskTerminationCfg(success=[ProgressObjective(name="done", predicate_sequence=[lambda env: True])])
+            return TaskTerminationCfg(
+                timeout_s=10.0, success=[ProgressObjective(name="done", predicate_sequence=[lambda env: True])]
+            )
+
+        def get_metrics(self):
+            return []
+
+    class BodySpecificTask(ObservedTask):
+        def configure_for_embodiment(self, embodiment):
+            raise AssertionError("An ambiguous robot must never reach this hook")
+
+    class BodySpecificComposite(CompositeTaskBase):
+        def configure_for_embodiment(self, embodiment):
+            raise AssertionError("An ambiguous robot must never reach this hook")
 
     definition = make_two_robot_definition()
     definition.task = CompositeTaskBase([ObservedTask(), ObservedTask()])
     cfg, _ = ArenaEnvBuilder(definition, ArenaEnvBuilderCfg(num_envs=2, solve_relations=False)).compose_manager_cfg()
     assert cfg.scene.left is not None and cfg.scene.right is not None
+    for task in (
+        BodySpecificTask(),
+        CompositeTaskBase([BodySpecificTask()]),
+        BodySpecificComposite([ObservedTask()]),
+    ):
+        definition.task = task
+        with pytest.raises(AssertionError, match="embodiment-specific configuration require one robot"):
+            ArenaEnvBuilder(definition, ArenaEnvBuilderCfg(num_envs=2, solve_relations=False)).compose_manager_cfg()
     return True
 
 

@@ -391,7 +391,12 @@ class ArenaEnvBuilder:
             task.configure_for_embodiment(embodiments[0])
         else:
             # Composite tasks are flat and forward this hook to their children.
-            tasks = task.subtasks if isinstance(task, CompositeTaskBase) else [task]
+            tasks = (
+                task.subtasks
+                if isinstance(task, CompositeTaskBase)
+                and type(task).configure_for_embodiment is CompositeTaskBase.configure_for_embodiment
+                else [task]
+            )
             assert all(
                 type(child).configure_for_embodiment is TaskBase.configure_for_embodiment for child in tasks
             ), "Tasks with embodiment-specific configuration require one robot."
