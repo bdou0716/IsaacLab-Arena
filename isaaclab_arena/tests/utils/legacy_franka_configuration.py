@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Preserve Franka composition from upstream commit 489f3a755 for comparison.
+"""Preserve unkeyed Franka composition from upstream commit aa36f191d for comparison.
 
 Configuration classes are unchanged by the instance-key contribution. This fixture
 reconstructs their original initialization and getters independently of the changed
@@ -29,6 +29,7 @@ from isaaclab_arena.embodiments.franka.franka import (
     FrankaSceneCfg,
     _franka_robot_cfg_on_stand,
 )
+from isaaclab_arena.embodiments.gripper import PandaGripper
 from isaaclab_arena.utils.cameras import ArenaCameraCfg, make_camera_observation_cfg
 from isaaclab_arena.utils.configclass import combine_configclass_instances
 
@@ -38,6 +39,7 @@ class LegacyFrankaIKEmbodiment(FrankaIKEmbodiment):
 
     def __init__(self, enable_cameras=False):
         EmbodimentBase.__init__(self, enable_cameras=enable_cameras)
+        self.gripper = PandaGripper()
         self.event_config = FrankaEventCfg()
         self.reward_config = FrankaRewardsCfg()
         self.mimic_env = FrankaMimicEnv
@@ -50,6 +52,7 @@ class LegacyFrankaIKEmbodiment(FrankaIKEmbodiment):
         self.action_config = FrankaIKActionCfg()
 
     def get_scene_cfg(self) -> Any:
+        self._apply_spawn_cfg_addons()
         construction_pose = self._get_initial_pose_as_pose()
         if construction_pose is not None:
             self.scene_config = self._update_scene_cfg_with_robot_initial_pose(self.scene_config, construction_pose)
@@ -120,9 +123,6 @@ class LegacyFrankaIKEmbodiment(FrankaIKEmbodiment):
         return make_trajectory_recorder_terms_cfg(
             frame_transformer_names=self.get_ee_frame_transformer_names(), asset_name=self.get_scene_key()
         )
-
-    def get_termination_cfg(self) -> Any:
-        return self.termination_cfg
 
     def get_scene_key(self) -> str:
         """Return the embodiment's Isaac Lab scene key."""

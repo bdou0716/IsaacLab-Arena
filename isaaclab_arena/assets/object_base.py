@@ -19,6 +19,7 @@ from isaaclab_arena.relations.placement_asset import PlaceableAsset
 from isaaclab_arena.terms.events import reset_articulation_pose_and_joints, set_object_pose, set_object_pose_per_env
 from isaaclab_arena.utils.pose import Pose, PosePerEnv, PoseRange
 from isaaclab_arena.utils.velocity import Velocity
+from isaaclab_arena.variations.object_disappear_variation import ObjectDisappearVariation
 from isaaclab_arena.variations.object_mass_variation import ObjectMassVariation
 
 
@@ -74,6 +75,7 @@ class RootedObjectBase(ObjectBase):
         }, f"RootedObjectBase does not support object type '{self.object_type}'."
         if self.object_type == ObjectType.RIGID:
             self.add_variation(ObjectMassVariation(self.name))
+            self.add_variation(ObjectDisappearVariation(self.name))
         self.initial_velocity: Velocity | None = None
 
     def _set_initial_pose(self, pose: Pose | PoseRange | PosePerEnv) -> None:
@@ -108,6 +110,16 @@ class RootedObjectBase(ObjectBase):
         return event is not None and (
             event.func is not reset_articulation_pose_and_joints or event.params["pose"] is not None
         )
+
+    def clear_pose_reset_event(self) -> None:
+        """Release root-pose ownership while retaining an articulation's joint reset."""
+        super().clear_pose_reset_event()
+        if self.object_type == ObjectType.ARTICULATION:
+            self._pose_event_cfg = EventTermCfg(
+                func=reset_articulation_pose_and_joints,
+                mode="reset",
+                params={"asset_cfg": SceneEntityCfg(self.name), "pose": None},
+            )
 
     def _requires_reset_pose_event(self) -> bool:
         """Whether a reset-event for the initial pose should be generated.

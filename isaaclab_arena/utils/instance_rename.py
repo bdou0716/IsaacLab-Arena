@@ -114,9 +114,7 @@ def rename_instance_cfg(
     instance_key: str,
     scene_names: tuple[str, ...],
     action_names: tuple[str, ...],
-    kind: Literal[
-        "scene", "actions", "observations", "events", "rewards", "curriculum", "commands", "recorders", "terminations"
-    ],
+    kind: Literal["scene", "actions", "observations", "events", "rewards", "curriculum", "commands", "recorders"],
 ) -> Any:
     """Return an independent configuration with this robot's names rewritten.
 
