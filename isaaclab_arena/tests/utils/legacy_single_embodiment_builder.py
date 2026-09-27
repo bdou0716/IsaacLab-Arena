@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Freeze single-robot assembly at the pre-contribution revision.
+"""Preserve single-robot assembly from upstream commit aa36f191d.
 
 Inherited variation and recording helpers remain shared. Explicit expectations in
 the regression tests cover those helpers; this fixture isolates assembly changes.
@@ -28,11 +28,8 @@ from isaaclab_arena.environments.isaaclab_arena_manager_based_env_cfg import (
     IsaacLabArenaManagerBasedRLEnvCfg,
 )
 from isaaclab_arena.metrics.recorder_manager_utils import metrics_to_recorder_manager_cfg
-from isaaclab_arena.progress_tracking.progress_tracker import (
-    make_progress_tracking_events_cfg,
-    make_progress_tracking_recorder_cfg,
-)
-from isaaclab_arena.relations.placement_events import PLACEMENT_RESET_EVENT_NAME
+from isaaclab_arena.progress_tracking.progress_tracker import ProgressTrackingRecorderManagerCfg
+from isaaclab_arena.relations.placement_events import CACHED_PLACEMENT_RESET_EVENT_NAME, PLACEMENT_RESET_EVENT_NAME
 from isaaclab_arena.tasks.no_task import NoTask
 from isaaclab_arena.terms.events import ResetBackgroundPhysics
 from isaaclab_arena.terms.recorders import ArenaEnvRecorderManagerCfg
@@ -48,6 +45,7 @@ class LegacySingleEmbodimentBuilder(ArenaEnvBuilder):
 
     Inherited helpers retain shared metadata and physics setup. The assembly
     method remains independent of the new loops and combination helpers.
+    Task termination follows the upstream unified configuration interface.
     """
 
     def compose_manager_cfg(self) -> tuple[IsaacLabArenaManagerBasedRLEnvCfg, dict[str, Any]]:
@@ -58,8 +56,10 @@ class LegacySingleEmbodimentBuilder(ArenaEnvBuilder):
         Returns:
             An (env_cfg, env_kwargs) tuple.
         """
-        # Solve relations before building scene config so positions are captured correctly.
-        if self.cfg.solve_relations:
+        self._placement_layouts = self._load_placement_layouts()
+        if self._placement_layouts is not None:
+            self._apply_cached_layouts(self._placement_layouts)
+        elif self.cfg.solve_relations:
             self._solve_relations()
 
         # Apply Hydra variation overrides. Needs to happen before build-time variations are applied.
@@ -81,6 +81,7 @@ class LegacySingleEmbodimentBuilder(ArenaEnvBuilder):
         embodiment = self.arena_env.embodiment or NoEmbodiment()
         embodiment.configure_physics_backend(resolved_physics_backend)
         task = self.arena_env.task or NoTask()
+        task.configure_for_embodiment(embodiment)
         scene_cfg = combine_configclass_instances(
             "SceneCfg",
             self.interactive_scene_cfg,
@@ -96,16 +97,16 @@ class LegacySingleEmbodimentBuilder(ArenaEnvBuilder):
         )
         placement_event_cfg = None
         if self._placement_event_cfg is not None:
+            event_name = (
+                CACHED_PLACEMENT_RESET_EVENT_NAME if self._placement_layouts is not None else PLACEMENT_RESET_EVENT_NAME
+            )
             PlacementEventCfg = make_configclass(
                 "PlacementEventCfg",
-                [(PLACEMENT_RESET_EVENT_NAME, EventTermCfg, self._placement_event_cfg)],
+                [(event_name, EventTermCfg, self._placement_event_cfg)],
             )
             placement_event_cfg = PlacementEventCfg()
         variations_event_cfg = self._compose_variations_event_cfg()
-        progress_objectives = task.get_progress_objectives()
-        progress_tracking_events_cfg: Any = (
-            make_progress_tracking_events_cfg(progress_objectives) if progress_objectives else None
-        )
+        task_termination_cfg = task.get_termination_cfg()
         background_physics_events_cfg = None
         background_physics_paths = self.arena_env.scene.get_background_physics_paths()
         if background_physics_paths:
@@ -133,14 +134,8 @@ class LegacySingleEmbodimentBuilder(ArenaEnvBuilder):
             task.get_events_cfg(),
             placement_event_cfg,
             variations_event_cfg,
-            progress_tracking_events_cfg,
         )
-        termination_cfg = combine_configclass_instances(
-            "TerminationCfg",
-            task.get_termination_cfg(),
-            self.arena_env.scene.get_termination_cfg(),
-            embodiment.get_termination_cfg(),
-        )
+        termination_cfg = self._build_termination_manager_cfg(task_termination_cfg)
         actions_cfg = embodiment.get_action_cfg()
         xr_cfg = embodiment.get_xr_cfg()
         isaac_teleop_cfg = None
@@ -156,7 +151,7 @@ class LegacySingleEmbodimentBuilder(ArenaEnvBuilder):
         metrics_cfg = self._compose_metrics_cfg(metrics)
         metrics_recorder_manager_cfg = metrics_to_recorder_manager_cfg(metrics)
         progress_tracking_recorder_cfg: Any = (
-            make_progress_tracking_recorder_cfg(progress_objectives) if progress_objectives else None
+            ProgressTrackingRecorderManagerCfg() if task_termination_cfg.success else None
         )
 
         # Base has to be specified explicitly to avoid type errors and not lose inheritance.
@@ -200,7 +195,9 @@ class LegacySingleEmbodimentBuilder(ArenaEnvBuilder):
 
         viewer_cfg = task.get_viewer_cfg()
 
-        episode_length_s = task.get_episode_length_s()
+        episode_length_s = task_termination_cfg.timeout_s
+        if episode_length_s is None:
+            episode_length_s = task.get_episode_length_s()
 
         task_description = self.cfg.language_instruction or task.get_task_description()
 

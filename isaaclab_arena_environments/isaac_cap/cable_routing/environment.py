@@ -3,6 +3,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# TODO(alexmillane) [physics-parameters-overrides-missing-feature]: Remove this file once we can
+# control the physics parameters in the yaml files.
+
 """Registered Isaac Cap bimanual YAM cable-routing environments."""
 
 from __future__ import annotations
@@ -11,6 +14,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from isaaclab_arena.environments.arena_environment_factory import ArenaEnvironmentCfg, ArenaEnvironmentFactory
+
+from ..registration import register_environment
 
 if TYPE_CHECKING:
     from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
@@ -79,7 +84,7 @@ def _build_environment(
         viewer_lookat=(TABLE_CENTER_X, 0.0, BOARD_TOP_Z),
     )
     return IsaacLabArenaEnvironment(
-        name=f"vabar_cable_routing__{variant.name}",
+        name=f"cable_routing__{variant.name}",
         embodiment=embodiment,
         scene=built_scene.scene,
         task=task,
@@ -88,10 +93,11 @@ def _build_environment(
     )
 
 
+@register_environment
 class CableRoutingMediumEnvironment(ArenaEnvironmentFactory[CableRoutingMediumEnvironmentCfg]):
     """Build Cap's medium cable-routing environment on native Arena APIs."""
 
-    name = "vabar_cable_routing__medium"
+    name = "cable_routing__medium"
     _legacy_argparse_cfg_type = CableRoutingMediumEnvironmentCfg
 
     def build(self, cfg: CableRoutingMediumEnvironmentCfg) -> IsaacLabArenaEnvironment:
@@ -99,10 +105,11 @@ class CableRoutingMediumEnvironment(ArenaEnvironmentFactory[CableRoutingMediumEn
         return _build_environment(self, cfg, "medium")
 
 
+@register_environment
 class CableRoutingEasyEnvironment(ArenaEnvironmentFactory[CableRoutingEasyEnvironmentCfg]):
     """Build Cap's easy cable-routing environment on native Arena APIs."""
 
-    name = "vabar_cable_routing__easy"
+    name = "cable_routing__easy"
     _legacy_argparse_cfg_type = CableRoutingEasyEnvironmentCfg
 
     def build(self, cfg: CableRoutingEasyEnvironmentCfg) -> IsaacLabArenaEnvironment:

@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from isaaclab_arena.relations.placement_asset import PlaceableAsset
 from isaaclab_arena.utils.physics_backend import PhysicsBackend
 
 if TYPE_CHECKING:
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from isaaclab_arena.environments.isaaclab_arena_manager_based_env_cfg import IsaacLabArenaManagerBasedRLEnvCfg
     from isaaclab_arena.recording.episode_recorder_manager import EpisodeRecorderTermCfg
     from isaaclab_arena.relations.object_placer_params import ObjectPlacerParams
+    from isaaclab_arena.relations.placement_layouts import PlacementLayouts
     from isaaclab_arena.scene.scene import Scene
     from isaaclab_arena.tasks.task_base import TaskBase
 
@@ -30,12 +32,15 @@ class IsaacLabArenaEnvironment:
         embodiment: EmbodimentBase | None = None,
         task: TaskBase | None = None,
         teleop_device: TeleopDeviceBase | None = None,
-        env_cfg_callback: Callable[IsaacLabArenaManagerBasedRLEnvCfg] | None = None,
+        env_cfg_callback: (
+            Callable[[IsaacLabArenaManagerBasedRLEnvCfg], IsaacLabArenaManagerBasedRLEnvCfg] | None
+        ) = None,
         rl_framework_entry_point: str | None = None,
         rl_policy_cfg: str | None = None,
         episode_recorder_terms: dict[str, EpisodeRecorderTermCfg] | None = None,
         placer_params: ObjectPlacerParams | None = None,
         default_physics_backend: PhysicsBackend = PhysicsBackend.PHYSX,
+        placement_layouts: PlacementLayouts | None = None,
         embodiments: list[EmbodimentBase] | None = None,
     ):
         """
@@ -60,6 +65,7 @@ class IsaacLabArenaEnvironment:
             placer_params: Object placement configuration. When None, default
                 ObjectPlacerParams are used.
             default_physics_backend: Default physics backend when ``--presets`` is omitted.
+            placement_layouts: Optional complete cached root layouts keyed by runtime scene names.
             embodiments: Robots in action-column order. Each robot's declared action terms
                 are concatenated in list order. Mutually exclusive with ``embodiment``.
         """
@@ -78,6 +84,13 @@ class IsaacLabArenaEnvironment:
         self.episode_recorder_terms = episode_recorder_terms or {}
         self.placer_params = placer_params
         self.default_physics_backend = PhysicsBackend(default_physics_backend)
+        self.placement_layouts = placement_layouts
+
+    def get_placement_assets(self) -> list[PlaceableAsset]:
+        """Return placeable scene assets and the embodiment."""
+        assets = [asset for asset in self.scene.assets.values() if isinstance(asset, PlaceableAsset)]
+        assets.extend(self.embodiments)
+        return assets
 
     def validate_embodiments(self) -> None:
         """Require distinct scene keys, including at most one unkeyed robot."""

@@ -18,7 +18,7 @@ from isaaclab_tasks.contrib.stack.mdp.franka_stack_events import randomize_objec
 
 from isaaclab_arena.assets.object_type import ObjectType
 from isaaclab_arena.utils.pose import Pose, PosePerEnv, PoseRange
-from isaaclab_arena.utils.usd_prim_tree import exclude_referenced_physics_roots, find_nested_physics_roots
+from isaaclab_arena.utils.usd.prim_tree import exclude_referenced_physics_roots, find_nested_physics_roots
 from isaaclab_arena.utils.velocity import Velocity
 
 

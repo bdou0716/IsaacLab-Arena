@@ -10,23 +10,28 @@ from __future__ import annotations
 import math
 import torch
 from collections.abc import Sequence
-from dataclasses import MISSING
+from functools import partial
+from typing import TYPE_CHECKING
 
 import isaaclab.envs.mdp as mdp
 from isaaclab.envs.common import ViewerCfg
 from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import math as math_utils
 from isaaclab.utils.configclass import configclass
 
 from isaaclab_arena.assets.cable import Cable
 from isaaclab_arena.assets.object_base import ObjectBase
+from isaaclab_arena.assets.register import register_task
 from isaaclab_arena.embodiments.common.arm_mode import ArmMode
 from isaaclab_arena.metrics.success_rate import SuccessRateMetric
+from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
 from isaaclab_arena.tasks.task_base import TaskBase
+from isaaclab_arena.tasks.task_termination_cfg import TaskTerminationCfg
 
 from .geometry import capsule_centerline
-from .scene import BOARD_TOP_Z, CableRoutingVariant, TerminatedCableGoal
+
+if TYPE_CHECKING:
+    from .scene import CableRoutingVariant, TerminatedCableGoal
 
 
 def _torch(value):
@@ -124,15 +129,8 @@ class CableRoutingEventsCfg:
     )
 
 
-@configclass
-class CableRoutingTerminationsCfg:
-    """Terminated-route success and timeout terms."""
-
-    success: DoneTerm = MISSING
-    time_out: DoneTerm = DoneTerm(func=mdp.time_out, time_out=True)
-
-
-class CableRoutingTask(TaskBase):
+@register_task
+class CableRoutingTaskV2(TaskBase):
     """Weave every guide and place the released free end in the port."""
 
     def __init__(
@@ -164,23 +162,29 @@ class CableRoutingTask(TaskBase):
         self.pegs = tuple(pegs)
         self.port = port
         self._events_cfg = CableRoutingEventsCfg()
-        self._terminations_cfg = CableRoutingTerminationsCfg(
-            success=DoneTerm(
-                func=terminated_cable_route_success,
-                params={
-                    "cable_asset_name": cable.name,
-                    "peg_asset_names": tuple(peg.name for peg in pegs),
-                    "port_asset_name": port.name,
-                    "goal": variant.terminated_goal,
-                    "cable_half_lengths": cable_half_lengths,
-                },
-            )
+        self._terminations_cfg = TaskTerminationCfg(
+            timeout_s=self.episode_length_s,
+            success=[
+                ProgressObjective(
+                    name="cable_routing",
+                    predicate_sequence=[
+                        partial(
+                            terminated_cable_route_success,
+                            cable_asset_name=cable.name,
+                            peg_asset_names=tuple(peg.name for peg in pegs),
+                            port_asset_name=port.name,
+                            goal=variant.terminated_goal,
+                            cable_half_lengths=cable_half_lengths,
+                        ),
+                    ],
+                ),
+            ],
         )
 
     def get_scene_cfg(self):
         return None
 
-    def get_termination_cfg(self):
+    def get_termination_cfg(self) -> TaskTerminationCfg:
         return self._terminations_cfg
 
     def get_events_cfg(self):
@@ -198,7 +202,6 @@ class CableRoutingTask(TaskBase):
         return camera_warmup_recorder_cfg()
 
     def get_viewer_cfg(self) -> ViewerCfg:
+        from .scene import BOARD_TOP_Z
+
         return ViewerCfg(eye=(1.25, -1.10, 1.55), lookat=(0.0125, 0.0, BOARD_TOP_Z))
-
-
-__all__ = ["CableRoutingTask", "terminated_cable_route_success"]

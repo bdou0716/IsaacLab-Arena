@@ -445,3 +445,26 @@ def _test_scene_articulation_reset(simulation_app):
 
 def test_scene_articulation_owns_selected_joint_reset():
     assert run_function_with_persistent_simulation_app(_test_scene_articulation_reset)
+
+
+def _test_multiple_robots_accept_independent_composite_tasks(simulation_app):
+    from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
+    from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
+    from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
+    from isaaclab_arena.tasks.composite_task_base import CompositeTaskBase
+    from isaaclab_arena.tasks.no_task import NoTask
+    from isaaclab_arena.tasks.task_termination_cfg import TaskTerminationCfg
+
+    class ObservedTask(NoTask):
+        def get_termination_cfg(self):
+            return TaskTerminationCfg(success=[ProgressObjective(name="done", predicate_sequence=[lambda env: True])])
+
+    definition = make_two_robot_definition()
+    definition.task = CompositeTaskBase([ObservedTask(), ObservedTask()])
+    cfg, _ = ArenaEnvBuilder(definition, ArenaEnvBuilderCfg(num_envs=2, solve_relations=False)).compose_manager_cfg()
+    assert cfg.scene.left is not None and cfg.scene.right is not None
+    return True
+
+
+def test_multiple_robots_accept_independent_composite_tasks():
+    assert run_function_with_persistent_simulation_app(_test_multiple_robots_accept_independent_composite_tasks)

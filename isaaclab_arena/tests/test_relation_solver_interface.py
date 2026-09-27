@@ -313,3 +313,39 @@ def test_articulation_joint_reset_does_not_conflict_with_relation_placement(reso
     obj.disable_reset_pose()
     assert obj.get_event_cfg()[1] is None
     assert not obj.has_pose_reset_event()
+
+
+def test_cached_articulation_placement_preserves_joint_reset():
+    import torch
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from isaaclab_arena.assets.object import Object
+    from isaaclab_arena.assets.object_type import ObjectType
+    from isaaclab_arena.relations.placement_events import make_cached_placement_event
+    from isaaclab_arena.relations.placement_layouts import PlacementLayouts
+    from isaaclab_arena.utils.pose import Pose
+
+    obj = Object(name="drawer", usd_path="/unused/drawer.usd", object_type=ObjectType.ARTICULATION)
+    obj.set_initial_pose(Pose.identity())
+    layouts = PlacementLayouts({"drawer": [Pose((1.0, 0.0, 0.0))]})
+    make_cached_placement_event(layouts, [obj], num_envs=2)
+    assert not obj.has_pose_reset_event()
+    event = obj.get_event_cfg()[1]
+    asset = SimpleNamespace(
+        data=SimpleNamespace(
+            default_joint_pos=SimpleNamespace(torch=torch.tensor([[0.2], [0.4]])),
+            default_joint_vel=SimpleNamespace(torch=torch.zeros(2, 1)),
+        ),
+        write_joint_position_to_sim_index=Mock(),
+        write_joint_velocity_to_sim_index=Mock(),
+        write_root_pose_to_sim=Mock(),
+        write_root_velocity_to_sim=Mock(),
+    )
+    event.func(SimpleNamespace(scene={"drawer": asset}, device="cpu"), torch.tensor([1]), **event.params)
+    torch.testing.assert_close(
+        asset.write_joint_position_to_sim_index.call_args.kwargs["position"], torch.tensor([[0.4]])
+    )
+    torch.testing.assert_close(asset.write_joint_velocity_to_sim_index.call_args.kwargs["velocity"], torch.zeros(1, 1))
+    assert not asset.write_root_pose_to_sim.called
+    assert not asset.write_root_velocity_to_sim.called

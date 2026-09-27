@@ -3,6 +3,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# TODO(alexmillane) [physics-parameters-overrides-missing-feature]: Remove this file once we can
+# control the physics parameters in the yaml files.
+
 """Native Newton coupling configuration for Isaac Cap cable routing."""
 
 from __future__ import annotations

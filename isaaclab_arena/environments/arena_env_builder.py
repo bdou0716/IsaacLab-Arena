@@ -14,7 +14,8 @@ from isaaclab.app.settings_manager import get_settings_manager
 from isaaclab.devices.device_base import DeviceCfg, DevicesCfg
 from isaaclab.envs import ManagerBasedRLMimicEnv
 from isaaclab.envs.manager_based_env import ManagerBasedEnv
-from isaaclab.managers import EventTermCfg
+from isaaclab.envs.mdp import time_out
+from isaaclab.managers import EventTermCfg, TerminationTermCfg
 from isaaclab.managers.recorder_manager import RecorderManagerBaseCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab_newton.physics import NewtonCfg
@@ -37,17 +38,23 @@ from isaaclab_arena.environments.relation_solver_interface import solve_and_appl
 from isaaclab_arena.metrics.metric_base import MetricBase
 from isaaclab_arena.metrics.metric_term_cfg import MetricTermCfg
 from isaaclab_arena.metrics.recorder_manager_utils import metrics_to_recorder_manager_cfg
-from isaaclab_arena.progress_tracking.progress_tracker import (
-    make_progress_tracking_events_cfg,
-    make_progress_tracking_recorder_cfg,
-)
+from isaaclab_arena.progress_tracking.progress_tracker import ProgressTrackingRecorderManagerCfg
+from isaaclab_arena.progress_tracking.task_success import TaskSuccessTerm
 from isaaclab_arena.recording.common_terms import CoreEpisodeRecorderTermCfg, VariationEpisodeRecorderTermCfg
 from isaaclab_arena.recording.episode_recorder_manager import EpisodeRecorderTermCfg
 from isaaclab_arena.recording.progress_terms import ProgressEpisodeRecorderTermCfg
 from isaaclab_arena.relations.object_placer_params import ObjectPlacerParams
-from isaaclab_arena.relations.placement_events import PLACEMENT_RESET_EVENT_NAME
+from isaaclab_arena.relations.placement_events import (
+    CACHED_PLACEMENT_RESET_EVENT_NAME,
+    PLACEMENT_RESET_EVENT_NAME,
+    make_cached_placement_event,
+)
+from isaaclab_arena.relations.placement_layouts import PlacementLayouts
 from isaaclab_arena.relations.relation_solver_params import RelationSolverParams
+from isaaclab_arena.tasks.composite_task_base import CompositeTaskBase
 from isaaclab_arena.tasks.no_task import NoTask
+from isaaclab_arena.tasks.task_base import TaskBase
+from isaaclab_arena.tasks.task_termination_cfg import TaskTerminationCfg
 from isaaclab_arena.terms.events import ResetBackgroundPhysics, scope_articulation_resets
 from isaaclab_arena.terms.recorders import (
     ArenaEnvRecorderManagerCfg,
@@ -98,6 +105,7 @@ class ArenaEnvBuilder:
             num_envs=cfg.num_envs, env_spacing=cfg.env_spacing, replicate_physics=False
         )
         self._placement_event_cfg: EventTermCfg | None = None
+        self._placement_layouts: PlacementLayouts | None = None
 
     @property
     def resolved_physics_backend(self) -> PhysicsBackend:
@@ -153,6 +161,28 @@ class ArenaEnvBuilder:
             num_envs=self.cfg.num_envs,
             placer_params=placer_params,
             scene_assets=self.arena_env.scene.assets.values(),
+        )
+
+    def _load_placement_layouts(self) -> PlacementLayouts | None:
+        """Read the configured companion file or return in-memory layouts."""
+        layouts = self.arena_env.placement_layouts
+        if self.cfg.placement_layouts_path is not None:
+            assert layouts is None, "Specify a placement layout file or in-memory layouts, not both"
+            layouts = PlacementLayouts.from_episode_jsonl(self.cfg.placement_layouts_path)
+        return layouts
+
+    def _apply_cached_layouts(self, layouts: PlacementLayouts) -> None:
+        """Seed cached poses and register their reset event."""
+        assert self.cfg.placement_seed is None, "placement_seed applies to solving, not cached layouts"
+        placer_params = self.arena_env.placer_params
+        if placer_params is not None:
+            assert placer_params.placement_seed is None, "placement_seed applies to solving, not cached layouts"
+        resolve_on_reset = self.cfg.resolve_on_reset
+        if resolve_on_reset is None and placer_params is not None:
+            resolve_on_reset = placer_params.resolve_on_reset
+        assert resolve_on_reset is not False, "Cached replay requires resolve_on_reset=True"
+        self._placement_event_cfg = make_cached_placement_event(
+            layouts, self.arena_env.get_placement_assets(), self.cfg.num_envs
         )
 
     def get_all_variations(self) -> dict[str, list[VariationBase]]:
@@ -226,6 +256,37 @@ class ArenaEnvBuilder:
         fields = [(m.name, MetricTermCfg, m.get_metric_term_cfg()) for m in metrics]
         return make_configclass("MetricsCfg", fields)()
 
+    def _build_termination_manager_cfg(
+        self,
+        task_termination_cfg: TaskTerminationCfg,
+    ) -> object:
+        """Translate TaskTerminationCfg into an Isaac Lab termination configclass.
+
+        Args:
+            task_termination_cfg: Task-owned success objectives, failures, and timeout.
+
+        Returns:
+            A configclass containing the requested failure, timeout, and success terms.
+        """
+        termination_terms = dict(task_termination_cfg.failures)
+        if task_termination_cfg.timeout_s is not None:
+            termination_terms["time_out"] = TerminationTermCfg(func=time_out, time_out=True)
+        success_objectives = task_termination_cfg.success
+
+        # Install the shared success term when the task defines success objectives.
+        if success_objectives:
+            success_term = TerminationTermCfg(
+                func=TaskSuccessTerm,
+                params={
+                    "success_objectives": success_objectives,
+                    "subtasks_are_sequential": task_termination_cfg.subtasks_are_sequential,
+                    "desired_subtask_success_state": task_termination_cfg.desired_subtask_success_state,
+                },
+            )
+            termination_terms["success"] = success_term
+        termination_fields = [(name, TerminationTermCfg, term) for name, term in termination_terms.items()]
+        return make_configclass("TerminationsCfg", termination_fields)()
+
     def _compose_episode_recorders_cfg(self, extra_terms: dict[str, EpisodeRecorderTermCfg] | None = None) -> object:
         """Build a configclass container with one EpisodeRecorderTermCfg field per episode recorder term.
 
@@ -286,8 +347,11 @@ class ArenaEnvBuilder:
         self._validate_mode()
         robot_count = len(self.arena_env.embodiments)
 
-        # Solve relations before building scene config so positions are captured correctly.
-        if self.cfg.solve_relations:
+        # Apply placement before building scene config so initial poses are captured correctly.
+        self._placement_layouts = self._load_placement_layouts()
+        if self._placement_layouts is not None:
+            self._apply_cached_layouts(self._placement_layouts)
+        elif self.cfg.solve_relations:
             self._solve_relations()
 
         # Apply Hydra variation overrides. Needs to happen before build-time variations are applied.
@@ -322,6 +386,14 @@ class ArenaEnvBuilder:
             return _combine_robot_cfgs(getter, configs)
 
         task = self.arena_env.task or NoTask()
+        if robot_count <= 1:
+            task.configure_for_embodiment(embodiments[0])
+        else:
+            # Composite tasks are flat and forward this hook to their children.
+            tasks = task.subtasks if isinstance(task, CompositeTaskBase) else [task]
+            assert all(
+                type(child).configure_for_embodiment is TaskBase.configure_for_embodiment for child in tasks
+            ), "Tasks with embodiment-specific configuration require one robot."
         scene_cfg = combine_configclass_instances(
             "SceneCfg",
             self.interactive_scene_cfg,
@@ -346,16 +418,19 @@ class ArenaEnvBuilder:
         )
         placement_event_cfg = None
         if self._placement_event_cfg is not None:
+            # The pooled event name is reserved for terms carrying a placement_pool handle.
+            event_name = (
+                CACHED_PLACEMENT_RESET_EVENT_NAME if self._placement_layouts is not None else PLACEMENT_RESET_EVENT_NAME
+            )
             PlacementEventCfg = make_configclass(
-                "PlacementEventCfg",
-                [(PLACEMENT_RESET_EVENT_NAME, EventTermCfg, self._placement_event_cfg)],
+                "PlacementEventCfg", [(event_name, EventTermCfg, self._placement_event_cfg)]
             )
             placement_event_cfg = PlacementEventCfg()
         variations_event_cfg = self._compose_variations_event_cfg()
-        progress_objectives = task.get_progress_objectives()
-        progress_tracking_events_cfg: Any = (
-            make_progress_tracking_events_cfg(progress_objectives) if progress_objectives else None
-        )
+        task_termination_cfg = task.get_termination_cfg()
+        assert isinstance(
+            task_termination_cfg, TaskTerminationCfg
+        ), "Tasks must return TaskTerminationCfg with success objectives, failures, and timeout_s."
         background_physics_events_cfg = None
         background_physics_paths = self.arena_env.scene.get_background_physics_paths()
         if background_physics_paths:
@@ -383,14 +458,8 @@ class ArenaEnvBuilder:
             task.get_events_cfg(),
             placement_event_cfg,
             variations_event_cfg,
-            progress_tracking_events_cfg,
         )
-        termination_cfg = combine_configclass_instances(
-            "TerminationCfg",
-            task.get_termination_cfg(),
-            self.arena_env.scene.get_termination_cfg(),
-            robot_cfg("get_termination_cfg"),
-        )
+        termination_cfg = self._build_termination_manager_cfg(task_termination_cfg)
         actions_cfg = robot_cfg("get_action_cfg")
         xr_cfg = embodiments[0].get_xr_cfg() if robot_count <= 1 else None
         isaac_teleop_cfg = None
@@ -406,7 +475,7 @@ class ArenaEnvBuilder:
         metrics_cfg = self._compose_metrics_cfg(metrics)
         metrics_recorder_manager_cfg = metrics_to_recorder_manager_cfg(metrics)
         progress_tracking_recorder_cfg: Any = (
-            make_progress_tracking_recorder_cfg(progress_objectives) if progress_objectives else None
+            ProgressTrackingRecorderManagerCfg() if task_termination_cfg.success else None
         )
 
         # Base has to be specified explicitly to avoid type errors and not lose inheritance.
@@ -455,7 +524,10 @@ class ArenaEnvBuilder:
 
         viewer_cfg = task.get_viewer_cfg()
 
-        episode_length_s = task.get_episode_length_s()
+        episode_length_s = task_termination_cfg.timeout_s
+        if episode_length_s is None:
+            # Isaac Lab still needs a numeric episode length without timeout termination.
+            episode_length_s = task.get_episode_length_s()
 
         task_description = self.cfg.language_instruction or task.get_task_description()
 
