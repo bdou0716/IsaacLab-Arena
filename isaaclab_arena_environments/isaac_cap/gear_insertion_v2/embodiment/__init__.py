@@ -10,8 +10,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import ClassVar
 
+from isaaclab_arena.assets.register import register_asset
 from isaaclab_arena.embodiments.common.arm_mode import ArmMode
 from isaaclab_arena.embodiments.embodiment_base import EmbodimentBase
+from isaaclab_arena.embodiments.gripper import RobotiqGripper
 from isaaclab_arena.utils.pose import Pose
 from isaaclab_arena.variations.camera_extrinsics_variation import CameraExtrinsicsVariation
 
@@ -20,6 +22,9 @@ from .cameras import IndustrialFr3RobotiqCameraCfg
 from .config import (
     _ROBOT_ON_CART_INSTANCEABLE_USD_PATH,
     _ROBOT_ON_CART_USD_PATH,
+    END_EFFECTOR_BODY_NAME,
+    END_EFFECTOR_POINT_OFFSET_XYZ,
+    GRIPPER_JOINT_NAME,
     IndustrialFr3RobotiqEventCfg,
     IndustrialFr3RobotiqObservationsCfg,
     IndustrialFr3RobotiqSceneCfg,
@@ -47,6 +52,11 @@ class _IndustrialFr3Robotiq2f85Base(EmbodimentBase):
             _normalize_initial_pose(initial_pose),
             concatenate_observation_terms,
             arm_mode,
+        )
+        self.gripper = RobotiqGripper(
+            driver_joint_name=GRIPPER_JOINT_NAME,
+            body_name=END_EFFECTOR_BODY_NAME,
+            body_point_offset_xyz=END_EFFECTOR_POINT_OFFSET_XYZ,
         )
         self.scene_config = IndustrialFr3RobotiqSceneCfg()
         self.action_config = self.action_config_type()
@@ -97,18 +107,20 @@ class _IndustrialFr3Robotiq2f85Base(EmbodimentBase):
         return "robotiq_base"
 
 
+@register_asset
 class IndustrialFr3Robotiq2f85Embodiment(_IndustrialFr3Robotiq2f85Base):
     """Fixed-base FR3 absolute-joint embodiment with DROID-compatible streams."""
 
-    name = "industrial_fr3_robotiq_2f85"
+    name = "industrial_fr3_robotiq_2f85_v2"
     tags: ClassVar[list[str]] = ["embodiment"]
     action_config_type = IndustrialFr3RobotiqActionsCfg
 
 
+@register_asset
 class IndustrialFr3Robotiq2f85DifferentialIKEmbodiment(_IndustrialFr3Robotiq2f85Base):
     """FR3 relative Cartesian control for keyboard and SpaceMouse teleoperation."""
 
-    name = "industrial_fr3_robotiq_2f85_differential_ik"
+    name = "industrial_fr3_robotiq_2f85_differential_ik_v2"
     tags: ClassVar[list[str]] = ["embodiment"]
     action_config_type = IndustrialFr3RobotiqDifferentialIKActionsCfg
 

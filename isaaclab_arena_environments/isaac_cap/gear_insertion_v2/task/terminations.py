@@ -10,9 +10,32 @@ from __future__ import annotations
 import math
 import torch
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from isaaclab.managers import ManagerTermBase, SceneEntityCfg, TerminationTermCfg
 from isaaclab.utils import math as math_utils
+
+from isaaclab_arena.tasks.predicates.gripper import gripper_released
+
+if TYPE_CHECKING:
+    from isaaclab_arena.embodiments.gripper import Gripper
+
+
+def reset_gear_mesh_state(env, env_ids=None) -> None:
+    """Clear gear_mesh_success state for standalone or composite tasks."""
+    # TODO(cvolk): Temporary CAP workaround for the legacy gear-mesh predicate.
+    # Separate motor control/history from success and migrate its hold counter
+    # to TrueForConsecutiveStepsCfg, then remove this reset callback.
+    progress_tracker = env.progress_tracker
+    found_matching_objective = False
+    for objective in progress_tracker.progress_objectives:
+        # CompositeTaskBase prefixes objective names with the subtask index.
+        if objective.name.rsplit("/", 1)[-1] == "gear_mesh":
+            gear_mesh_predicate = progress_tracker.get_predicate(objective.name)
+            gear_mesh_predicate.reset(env_ids)
+            found_matching_objective = True
+    # A renamed objective must not silently carry state into the next episode.
+    assert found_matching_objective, "reset_gear_mesh_state found no gear_mesh objective to reset."
 
 
 def _torch(value):
@@ -20,17 +43,16 @@ def _torch(value):
 
 
 class gear_mesh_success(ManagerTermBase):
-    """Latch the motor on button press and require released, seated rotation."""
+    """Latch the motor and require seated rotation after jaw release and withdrawal."""
 
     def __init__(self, cfg: TerminationTermCfg, env):
         super().__init__(cfg, env)
         self.board = env.scene[cfg.params["board_asset_cfg"].name]
         self.gears = tuple(env.scene[asset_cfg.name] for asset_cfg in cfg.params["gear_asset_cfgs"])
         self.gear = self.gears[0]
-        self.robot = env.scene[cfg.params["robot_asset_cfg"].name]
+        assert cfg.params.get("gripper") is not None, "Gear mesh requires a bound embodiment gripper."
         self.pinion_joint = self.board.data.joint_names.index("pinion_joint")
         self.button_joint = self.board.data.joint_names.index("button_joint")
-        self.tcp_body = self.robot.data.body_names.index(cfg.params["tcp_body_name"])
         self.latched = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
         self.seated_seen = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
         self.started_after_seating = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
@@ -60,9 +82,9 @@ class gear_mesh_success(ManagerTermBase):
         env,
         board_asset_cfg: SceneEntityCfg,
         gear_asset_cfgs: Sequence[SceneEntityCfg],
-        robot_asset_cfg: SceneEntityCfg,
-        tcp_body_name: str,
-        tcp_offset_xyz: Sequence[float],
+        gripper: Gripper,
+        grasp_width_m: float,
+        release_clearance_m: float,
         target_offsets_xyz: Sequence[Sequence[float]] | Sequence[Sequence[Sequence[float]]],
         button_latch_m: float = 0.005,
         drive_speed_rad_s: float = 4.0,
@@ -78,8 +100,6 @@ class gear_mesh_success(ManagerTermBase):
         del (
             board_asset_cfg,
             gear_asset_cfgs,
-            robot_asset_cfg,
-            tcp_body_name,
             hold_time_s,
             spin_window_s,
         )
@@ -151,14 +171,24 @@ class gear_mesh_success(ManagerTermBase):
         selected_spin = torch.gather(windowed_spin, 1, safe_chosen)
         gates = spin_fraction * drive_speed_rad_s * 14.0 / station_teeth
         turning = assigned & (torch.abs(selected_spin) >= gates)
-        tcp_body_pos = _torch(self.robot.data.body_pos_w)[:, self.tcp_body]
-        tcp_body_quat = _torch(self.robot.data.body_quat_w)[:, self.tcp_body]
-        tcp_offset = torch.as_tensor(tcp_offset_xyz, device=env.device, dtype=tcp_body_pos.dtype)
-        tcp_pos = tcp_body_pos + math_utils.quat_apply(tcp_body_quat, tcp_offset.expand_as(tcp_body_pos))
-        released_by_gear = torch.linalg.vector_norm(gear_pos - tcp_pos[:, None, :], dim=-1) >= release_distance_m
-        selected_released = torch.gather(released_by_gear, 1, safe_chosen)
+        # Both gates are intentional: withdrawal alone can pass while the jaws
+        # still hold a seated gear, so success also requires physical clearance.
+        gripper_clears_gears = gripper_released(
+            env,
+            gripper=gripper,
+            grasp_width_m=grasp_width_m,
+            release_clearance_m=release_clearance_m,
+        )
+        assert (
+            math.isfinite(release_distance_m) and release_distance_m >= 0.0
+        ), "Release distance must be non-negative and finite."
+        gripper_position_w = gripper.get_position_w(env.arena_world)
+        gripper_away_by_gear = (
+            torch.linalg.vector_norm(gear_pos - gripper_position_w[:, None, :], dim=-1) > release_distance_m
+        )
+        selected_gripper_away = torch.gather(gripper_away_by_gear, 1, safe_chosen)
         all_seated = assigned.all(dim=1)
-        all_valid = (assigned & turning & selected_released).all(dim=1)
+        all_valid = gripper_clears_gears & (assigned & turning & selected_gripper_away).all(dim=1)
         self.seated_seen |= all_seated
         self.started_after_seating |= newly_latched & self.seated_seen
         candidate = self.started_after_seating & all_valid

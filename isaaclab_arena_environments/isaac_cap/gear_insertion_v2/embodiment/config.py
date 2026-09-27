@@ -25,6 +25,7 @@ from isaaclab_arena.assets.nucleus import ARENA_NUCLEUS_DIR
 ARM_JOINT_NAMES = [f"fr3_joint{index}" for index in range(1, 8)]
 GRIPPER_JOINT_NAME = "left_driver_joint"
 END_EFFECTOR_BODY_NAME = "robotiq_base"
+END_EFFECTOR_POINT_OFFSET_XYZ = (0.0, 0.0, 0.157)
 # Upstream AUTOLab commands the Robotiq driver from 0.0 (open) to 0.8 rad
 # (closed). The authored USD limit remains wider and is not changed here.
 GRIPPER_CLOSED_ANGLE = 0.8
