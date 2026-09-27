@@ -65,6 +65,7 @@ def _test_tracked_events_do_not_gate_success_and_reset_independently(simulation_
     }
 
     env.predicate_results["fallen"][0] = True
+    env.episode_length_buf += 1
     manager.compute()
     recorder.record_post_step()
     states = env.progress_tracker.get_state()
@@ -185,6 +186,7 @@ def _test_composite_tracked_events_ignore_order_and_final_conditions(simulation_
     )
     env.predicate_results["first"][:] = False
     env.predicate_results["event"][1] = False
+    env.episode_length_buf += 1
     manager.compute()
     assert env.predicate_calls["second"] == 0
     assert env.progress_tracker.get_subtask_completion().tolist() == [[False, False], [False, False]]
@@ -195,9 +197,11 @@ def _test_composite_tracked_events_ignore_order_and_final_conditions(simulation_
     assert env.progress_tracker.get_events()[1] == []
 
     env.predicate_results["first"][:] = True
+    env.episode_length_buf += 1
     manager.compute()
     assert env.predicate_calls["second"] == 0
     env.predicate_results["first"][:] = False
+    env.episode_length_buf += 1
     manager.compute()
     assert manager.get_term("success").tolist() == [True, True]
     assert env.progress_tracker.get_subtask_completion().tolist() == [[True, True], [True, True]]
@@ -242,11 +246,13 @@ def _test_shared_stateless_predicate_runs_once_for_both_roles(simulation_app):
         tracked_objectives=[ProgressObjective(name="tracked", predicate_sequence=[shared])],
     )
     env.predicate_results["shared"][1] = False
+    env.episode_length_buf += 1
     manager.compute()
     assert env.predicate_calls["shared"] == 1
     assert [len(events) for events in env.progress_tracker.get_events()] == [2, 0]
     manager.reset(env_ids=[0])
     env.predicate_results["shared"][:] = True
+    env.episode_length_buf += 1
     manager.compute()
     assert env.predicate_calls["shared"] == 2
     assert manager.get_term("success").tolist() == [True, True]
@@ -254,111 +260,43 @@ def _test_shared_stateless_predicate_runs_once_for_both_roles(simulation_app):
     return True
 
 
-def _test_shared_managed_instance_is_rejected_across_roles(simulation_app):
-    import pytest
-    from isaaclab.managers import TerminationTermCfg
+def _test_reused_temporal_requirement_has_independent_role_counters(simulation_app):
+    import torch
 
     from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
     from isaaclab_arena.progress_tracking.progress_tracker import ProgressTracker
-    from isaaclab_arena.tasks.predicates.composite import CompositePredicate
-    from isaaclab_arena.tasks.predicates.consecutive import ConsecutivePredicate
-
-    class ConsecutiveEvent(ConsecutivePredicate):
-        def __call__(self, env, consecutive_steps=2, active_mask=None):
-            return self._update_consecutive_and_get_completion_mask(
-                env.predicate_results["shared"], active_mask=active_mask
-            )
+    from isaaclab_arena.tasks.predicates.temporal import TrueForConsecutiveStepsCfg
 
     env = _make_environment(["gate", "shared"])
-    cfg = TerminationTermCfg(func=ConsecutiveEvent, params={"consecutive_steps": 2})
-    shared = partial(ConsecutiveEvent(cfg, env), consecutive_steps=2)
-
-    def composite(*children):
-        composite_cfg = TerminationTermCfg(func=CompositePredicate)
-        composite_cfg.params["predicates"] = []
-        for child in children:
-            # Assign after config construction to deliberately share the runtime child.
-            child_cfg = TerminationTermCfg(func=child)
-            child_cfg.func = child
-            composite_cfg.params["predicates"].append(child_cfg)
-        instance = CompositePredicate(composite_cfg, env)
-        for predicate, child in zip(instance.predicates, children):
-            assert predicate.func is child
-        return partial(instance, **composite_cfg.params)
-
-    # One composite call must not advance the same child counter twice.
-    for children in ((shared, shared), (composite(shared), composite(shared))):
-        with pytest.raises(AssertionError, match="children must not share mutable counters"):
-            composite(*children)
-    stateless = partial(_controlled_predicate, predicate_name="shared")
-    composite(stateless, stateless)
-
-    for success_predicate, tracked_predicate in (
-        (shared, shared),
-        (composite(shared), shared),
-        (composite(composite(shared)), shared),
-        (composite(shared), composite(shared)),
-    ):
-        success = ProgressObjective(
-            name="success",
-            predicate_sequence=[partial(_controlled_predicate, predicate_name="gate"), success_predicate],
-        )
-        tracked = ProgressObjective(name="tracked", predicate_sequence=[tracked_predicate])
-        for success_objectives, tracked_objectives in (
-            ([success], [tracked]),
-            ([success, tracked], []),
-            ([], [success, tracked]),
-        ):
-            with pytest.raises(AssertionError, match="'success' and 'tracked'.*mutable counter"):
-                ProgressTracker(
-                    success_objectives,
-                    2,
-                    "cpu",
-                    env=env,
-                    tracked_objectives=tracked_objectives,
-                )
-
-    # A first predicate can still start late when its subtask waits for another subtask.
-    gate = ProgressObjective(
-        name="gate",
-        predicate_sequence=[partial(_controlled_predicate, predicate_name="gate")],
-        parent_subtask_idx=0,
+    requirement = TrueForConsecutiveStepsCfg(
+        predicate=partial(_controlled_predicate, predicate_name="shared"), required_steps=2
     )
-    delayed = ProgressObjective(name="success", predicate_sequence=[shared], parent_subtask_idx=1)
-    observed = ProgressObjective(name="tracked", predicate_sequence=[shared])
-    with pytest.raises(AssertionError, match="different activation histories"):
-        ProgressTracker(
-            [gate, delayed],
-            2,
-            "cpu",
-            env=env,
-            tracked_objectives=[observed],
-            subtasks_are_sequential=True,
-        )
-    assert shared.func.consecutive_true_steps.tolist() == [0, 0]
-
-    # Reusing a configuration gives each role its own counter.
     success = ProgressObjective(
-        name="success", predicate_sequence=[partial(_controlled_predicate, predicate_name="gate"), cfg]
+        name="success",
+        predicate_sequence=[partial(_controlled_predicate, predicate_name="gate"), requirement],
     )
-    tracked = ProgressObjective(name="tracked", predicate_sequence=[cfg])
+    tracked = ProgressObjective(name="tracked", predicate_sequence=[requirement])
     tracker = ProgressTracker([success], 2, "cpu", env=env, tracked_objectives=[tracked])
     env.predicate_results["gate"][:] = False
-    tracker.step(env)
-    tracker.step(env)
+    for step in (1, 2):
+        tracker.step(env, torch.full((2,), step, dtype=torch.long))
     assert not tracker.is_complete().any()
     assert tracker.get_state()[0].progress_objectives["tracked"].is_complete
     env.predicate_results["gate"][:] = True
-    tracker.step(env)
-    tracker.step(env)
+    for step in (3, 4):
+        tracker.step(env, torch.full((2,), step, dtype=torch.long))
     assert not tracker.is_complete().any()
-    tracker.step(env)
+    tracker.step(env, torch.tensor([5, 5]))
     assert tracker.is_complete().all()
+
     tracker.reset([0])
-    tracker.step(env)
+    tracker.step(env, torch.tensor([0, 5]))
     assert tracker.is_complete().tolist() == [False, True]
     assert not tracker.get_state()[0].progress_objectives["tracked"].is_complete
     assert tracker.get_state()[1].progress_objectives["tracked"].is_complete
+    tracker.step(env, torch.tensor([1, 5]))
+    assert tracker.get_state()[0].progress_objectives["tracked"].is_complete
+    assert not tracker.is_complete()[0]
     return True
 
 
@@ -366,49 +304,46 @@ def test_shared_stateless_predicate_runs_once_for_both_roles():
     assert run_function_with_persistent_simulation_app(_test_shared_stateless_predicate_runs_once_for_both_roles)
 
 
-def test_shared_managed_instance_is_rejected_across_roles():
-    assert run_function_with_persistent_simulation_app(_test_shared_managed_instance_is_rejected_across_roles)
+def test_reused_temporal_requirement_has_independent_role_counters():
+    assert run_function_with_persistent_simulation_app(_test_reused_temporal_requirement_has_independent_role_counters)
 
 
-def _test_shared_counter_uses_one_cached_evaluation(simulation_app):
-    from isaaclab.managers import TerminationTermCfg
+def _test_temporal_roles_share_only_the_instantaneous_check(simulation_app):
+    import torch
 
     from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
     from isaaclab_arena.progress_tracking.progress_tracker import ProgressTracker
-    from isaaclab_arena.tasks.predicates.composite import CompositePredicate
+    from isaaclab_arena.tasks.predicates.temporal import TrueForConsecutiveStepsCfg
 
     env = _make_environment(["shared"])
-    cfg = TerminationTermCfg(
-        func=CompositePredicate,
-        params={
-            "predicates": [TerminationTermCfg(func=_controlled_predicate, params={"predicate_name": "shared"})],
-            "consecutive_steps": 2,
-        },
+    requirement = TrueForConsecutiveStepsCfg(
+        predicate=partial(_controlled_predicate, predicate_name="shared"), required_steps=2
     )
-    counter = CompositePredicate(cfg, env)
-    shared = partial(counter, **cfg.params)
     tracker = ProgressTracker(
-        [ProgressObjective(name="required", predicate_sequence=[shared])],
+        [ProgressObjective(name="required", predicate_sequence=[requirement])],
         2,
         "cpu",
         env=env,
-        tracked_objectives=[ProgressObjective(name="observed", predicate_sequence=[shared])],
+        tracked_objectives=[ProgressObjective(name="observed", predicate_sequence=[requirement])],
     )
-
-    tracker.step(env)
-    assert counter.consecutive_true_steps.tolist() == [1, 1]
+    tracker.step(env, torch.tensor([1, 1]))
+    tracker.step(env, torch.tensor([1, 1]))
     assert env.predicate_calls["shared"] == 1
     assert not tracker.is_complete().any()
-    tracker.step(env)
-    assert counter.consecutive_true_steps.tolist() == [2, 2]
-    assert env.predicate_calls["shared"] == 2
+    tracker.step(env, torch.tensor([2, 1]))
+    assert tracker.is_complete().tolist() == [True, False]
+    assert [len(events) for events in tracker.get_events()] == [2, 0]
+    tracker.step(env, torch.tensor([2, 2]))
     assert tracker.is_complete().all()
     assert [len(events) for events in tracker.get_events()] == [2, 2]
 
     tracker.reset([0])
-    tracker.step(env)
-    assert counter.consecutive_true_steps.tolist() == [1, 2]
+    tracker.step(env, torch.tensor([0, 2]))
     assert tracker.is_complete().tolist() == [False, True]
+    tracker.step(env, torch.tensor([2, 2]))  # An unobserved step breaks the streak.
+    assert tracker.is_complete().tolist() == [False, True]
+    tracker.step(env, torch.tensor([3, 2]))
+    assert tracker.is_complete().all()
     return True
 
 
@@ -446,24 +381,18 @@ def _test_settling_observers_cannot_record_success_reference_early(simulation_ap
 
     from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
     from isaaclab_arena.progress_tracking.progress_tracker import ProgressTracker
-    from isaaclab_arena.tasks.predicates.composite import CompositePredicate
-    from isaaclab_arena.tasks.predicates.object_settling import ObjectsSettledForConsecutiveSteps, objects_settled
+    from isaaclab_arena.tasks.predicates.object_settling import objects_settled
+    from isaaclab_arena.tasks.predicates.temporal import TrueForConsecutiveStepsCfg
 
     instantaneous = partial(objects_settled, object_names=["object"])
-    consecutive = TerminationTermCfg(
-        func=ObjectsSettledForConsecutiveSteps,
-        params={"object_names": ["object"], "consecutive_steps": 1},
+    configured = TerminationTermCfg(func=objects_settled, params={"object_names": ["object"]})
+    observers = (
+        instantaneous,
+        configured,
+        TrueForConsecutiveStepsCfg(predicate=instantaneous, required_steps=2),
+        TrueForConsecutiveStepsCfg(predicate=configured, required_steps=2),
     )
-    nested_instantaneous = TerminationTermCfg(
-        func=CompositePredicate,
-        params={"predicates": [TerminationTermCfg(func=objects_settled, params={"object_names": ["object"]})]},
-    )
-    nested_consecutive = TerminationTermCfg(
-        func=CompositePredicate,
-        params={"predicates": [consecutive]},
-    )
-
-    for observer in (instantaneous, consecutive, nested_instantaneous, nested_consecutive):
+    for observer in observers:
         env = _make_environment(["gate"])
         env.predicate_results["gate"][:] = False
         positions = torch.zeros((2, 3))
@@ -492,7 +421,6 @@ def _test_settling_observers_cannot_record_success_reference_early(simulation_ap
         _, recorded = env.object_initial_rest_pose_recorder.get("object")
         assert not recorded.any()
 
-        # The success sequence records the pose only after its prerequisite becomes true.
         tracker = ProgressTracker([success], 2, "cpu", env=env)
         tracker.step(env)
         _, recorded = env.object_initial_rest_pose_recorder.get("object")
@@ -549,12 +477,14 @@ def _test_recording_continues_without_automatic_success_termination(simulation_a
     success_recorder = success_recorder_cfg.class_type(success_recorder_cfg, env)
     assert success_recorder.record_pre_reset([0, 1]) == (None, None)
 
+    env.episode_length_buf += 1
     assert not manager.compute().any()
     recorder.record_post_step()
     assert record_core_episode_results(env, env_id=0)["success"] is True
     assert record_progress_results(env, env_id=0)["progress"]["overall_score"] == 0.5
 
     env.predicate_results["found"][:] = True
+    env.episode_length_buf += 1
     assert not manager.compute().any()
     recorder.record_post_step()
     record = record_progress_results(env, env_id=0)["progress"]
@@ -586,8 +516,8 @@ def _test_composite_children_require_success_objectives(simulation_app):
     return True
 
 
-def test_shared_counter_uses_one_cached_evaluation():
-    assert run_function_with_persistent_simulation_app(_test_shared_counter_uses_one_cached_evaluation)
+def test_temporal_roles_share_only_the_instantaneous_check():
+    assert run_function_with_persistent_simulation_app(_test_temporal_roles_share_only_the_instantaneous_check)
 
 
 def test_read_only_managed_predicate_can_use_distinct_wrappers():

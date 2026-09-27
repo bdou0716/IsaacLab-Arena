@@ -18,8 +18,8 @@ from isaaclab.utils.configclass import configclass
 
 from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective, ProgressObjectiveCompletionMode
 from isaaclab_arena.progress_tracking.progress_tracking_utils import DEFAULT_GROUP_NAME, _predicate_repr
-from isaaclab_arena.tasks.predicates.temporal import TrueForConsecutiveStepsCfg, _TrueForConsecutiveSteps
 from isaaclab_arena.tasks.predicates.object_settling import objects_settled
+from isaaclab_arena.tasks.predicates.temporal import TrueForConsecutiveStepsCfg, _TrueForConsecutiveSteps
 
 
 def _initialize_predicate_parameters(value, env) -> None:
