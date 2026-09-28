@@ -9,7 +9,7 @@ import copy
 import functools
 import torch
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from isaaclab.managers import SceneEntityCfg, TerminationTermCfg
@@ -83,6 +83,9 @@ class PredicateEvent:
 
     score_delta: float
     """Normalized score this advance added to the group."""
+
+    details: dict[str, object] = field(default_factory=dict)
+    """Snapshot from the optional predicate.event_details(env_idx) hook, using an integer environment index."""
 
 
 @dataclass
@@ -331,6 +334,10 @@ class ProgressObjectiveRunner:
 
             # Emit an event for each env where a predicate was advanced.
             pred_name = _predicate_repr(predicate)
+            detail_source = predicate.predicate if isinstance(predicate, _TrueForConsecutiveSteps) else predicate
+            while isinstance(detail_source, functools.partial):
+                detail_source = detail_source.func
+            event_details = getattr(detail_source, "event_details", None)
             for env_idx in torch.nonzero(advance_mask, as_tuple=False).flatten().tolist():
                 events.append(
                     PredicateEvent(
@@ -341,6 +348,7 @@ class ProgressObjectiveRunner:
                         predicate_index=chain_idx,
                         predicate_name=pred_name,
                         score_delta=float(score_weight),
+                        details=copy.deepcopy(event_details(int(env_idx))) if event_details is not None else {},
                     )
                 )
 

@@ -48,6 +48,7 @@ def record_progress_results(env, env_id: int) -> dict[str, Any]:
                     "predicate_index": event.predicate_index,
                     "predicate_name": event.predicate_name,
                     "score_delta": event.score_delta,
+                    **({"details": event.details} if event.details else {}),
                 }
                 for event in events
             ],

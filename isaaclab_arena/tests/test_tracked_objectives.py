@@ -534,3 +534,57 @@ def test_recording_continues_without_automatic_success_termination():
 
 def test_composite_children_require_success_objectives():
     assert run_function_with_persistent_simulation_app(_test_composite_children_require_success_objectives)
+
+
+def _test_event_details_are_copied_per_environment_and_recorded(simulation_app):
+    import json
+    import torch
+
+    from isaaclab.managers import TerminationTermCfg
+
+    from isaaclab_arena.progress_tracking.progress_objective import ProgressObjective
+    from isaaclab_arena.progress_tracking.progress_tracker import ProgressTracker
+    from isaaclab_arena.recording.progress_terms import record_progress_results
+    from isaaclab_arena.tasks.predicates.temporal import TrueForConsecutiveStepsCfg
+
+    class ReasonPredicate:
+        def __init__(self, cfg, env):
+            self.reason = ["visible"]
+
+        def __call__(self, env):
+            return env.predicate_results["found"]
+
+        def event_details(self, env_idx):
+            return {"env": env_idx, "reason": self.reason}
+
+    env = _make_environment(["found"])
+    requirement = TrueForConsecutiveStepsCfg(predicate=TerminationTermCfg(func=ReasonPredicate), required_steps=2)
+    tracker = ProgressTracker(
+        [],
+        2,
+        "cpu",
+        env=env,
+        tracked_objectives=[ProgressObjective(name="reason", predicate_sequence=[requirement]), _objective("found")],
+    )
+    for step in (1, 2):
+        tracker.step(env, torch.full((2,), step, dtype=torch.long))
+    tracker.get_predicate("reason").reason.append("changed")
+    env.extras["progress_tracking"] = {"states": tracker.get_state(), "events": tracker.get_events()}
+    for env_idx in (0, 1):
+        events = record_progress_results(env, env_idx)["progress"]["events"]
+        assert events[1]["details"] == {"env": env_idx, "reason": ["visible"]}
+        expected = {
+            "step": 1,
+            "objective": "found",
+            "group": "default_group",
+            "predicate_index": 0,
+            "predicate_name": events[0]["predicate_name"],
+            "score_delta": 1.0,
+        }
+        assert json.dumps(events[0]) == json.dumps(expected)
+        assert json.loads(json.dumps(events[1]))["details"] == events[1]["details"]
+    return True
+
+
+def test_event_details_are_copied_per_environment_and_recorded():
+    assert run_function_with_persistent_simulation_app(_test_event_details_are_copied_per_environment_and_recorded)
