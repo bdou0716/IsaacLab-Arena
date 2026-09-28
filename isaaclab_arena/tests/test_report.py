@@ -575,3 +575,25 @@ def test_report_displays_a_group_that_never_emitted_an_event(tmp_path):
     assert "reach/left" in pages
     assert "reach/right" in pages
     assert "No predicate events recorded." in pages
+
+
+@pytest.mark.parametrize("details", [None, {}, {"reason": "<visible>"}])
+def test_progress_event_details_supply_the_existing_tooltip(tmp_path, details):
+    from html import escape
+
+    event = {"objective": "find", "predicate_index": 0, "predicate_name": "visible"}
+    if details is not None:
+        event["details"] = details
+    record = {
+        "env_id": 0,
+        "episode_in_env": 0,
+        "progress": {
+            "objectives": {"find": {"total_groups": 1}},
+            "events": [event],
+        },
+    }
+    (tmp_path / "episode_results_rebuild0.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    build_report(tmp_path)
+    pages = "".join(path.read_text(encoding="utf-8") for path in (tmp_path / "report").glob("job_*.html"))
+    expected = json.dumps(details, sort_keys=True) if details else "visible"
+    assert f'title="{escape(expected)}"' in pages

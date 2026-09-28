@@ -278,7 +278,11 @@ class JobSummary:
                             name=signal_name,
                             triggered=event is not None,
                             step=_as_int(event.get("step")) if event is not None else None,
-                            detail=str(event.get("predicate_name", "")) if event is not None else "",
+                            detail=(
+                                json.dumps(event["details"], sort_keys=True)
+                                if event is not None and event.get("details")
+                                else str(event.get("predicate_name", "")) if event is not None else ""
+                            ),
                             blocked=blocked,
                         )
                     )
