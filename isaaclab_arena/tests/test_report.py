@@ -10,6 +10,8 @@ import re
 import subprocess
 import sys
 
+import pytest
+
 from isaaclab_arena.visualization.episode_results_files import (
     format_episode_video_filename,
     parse_episode_video_filename,
@@ -603,3 +605,39 @@ def test_media_paths_are_url_quoted_and_text_is_escaped(tmp_path):
     assert "wrist%20cam%3Frgb" in run_page
     assert "<script>alert(1)</script>" not in run_page
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in run_page
+
+
+@pytest.mark.parametrize("details", [None, {}, {"reason": "<visible>"}])
+def test_recorded_event_details_become_the_signal_tooltip(tmp_path, details):
+    from html import escape
+
+    event = {
+        "step": 3,
+        "criteria_name": "find",
+        "sequence_name": "default_sequence",
+        "predicate_index": 0,
+        "predicate_name": "visible",
+    }
+    if details is not None:
+        event["details"] = details
+    record = {
+        "env_id": 0,
+        "episode_in_env": 0,
+        "progress": {
+            "criteria_by_name": {
+                "find": {
+                    "score": 1.0,
+                    "is_complete": True,
+                    "total_sequences": 1,
+                    "active_predicates": {"default_sequence": None},
+                }
+            },
+            "events": [event],
+        },
+    }
+    (tmp_path / "episode_results_rebuild0.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    build_report(tmp_path)
+
+    pages = "".join(path.read_text(encoding="utf-8") for path in (tmp_path / "report").glob("job_*.html"))
+    expected = json.dumps(details, sort_keys=True) if details else "visible"
+    assert f'class="signal on" title="{escape(expected)}"' in pages

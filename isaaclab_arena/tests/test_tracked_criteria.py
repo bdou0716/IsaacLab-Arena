@@ -198,6 +198,67 @@ def _test_success_requires_a_required_criteria_set(simulation_app):
     return True
 
 
+def _test_event_details_are_recorded_at_the_transition(simulation_app):
+    import json
+    import torch
+    from types import SimpleNamespace
+
+    from isaaclab.managers import TerminationTermCfg
+
+    from isaaclab_arena.progress_tracking.completion_criteria import CompletionCriteria
+    from isaaclab_arena.progress_tracking.progress_tracker import ProgressTracker
+    from isaaclab_arena.recording.progress_terms import record_progress_results
+    from isaaclab_arena.tasks.predicates.temporal import TrueForConsecutiveStepsCfg
+
+    class ReasonPredicate:
+        def __init__(self, cfg, env):
+            self.reason = ["visible"]
+
+        def __call__(self, env):
+            return env.predicate_results["found"]
+
+        def event_details(self, env_idx):
+            return {"env": env_idx, "reason": self.reason}
+
+    env = SimpleNamespace(
+        num_envs=2,
+        device="cpu",
+        scene={},
+        extras={},
+        predicate_results={"found": torch.ones(2, dtype=torch.bool)},
+        predicate_calls={"found": 0},
+    )
+    requirement = TrueForConsecutiveStepsCfg(predicate=TerminationTermCfg(func=ReasonPredicate), required_steps=2)
+    tracker = ProgressTracker(
+        [
+            _criteria("found"),
+            CompletionCriteria(name="reason", predicate_sequence=[requirement], required_for_success=False),
+        ],
+        num_envs=2,
+        device="cpu",
+        env=env,
+    )
+    for step in (1, 2):
+        tracker.step(env, torch.full((2,), step, dtype=torch.long))
+    # Later predicate state must not change events that were already recorded.
+    tracker.get_predicate("reason").reason.append("changed")
+    env.extras["progress_tracking"] = {"states": tracker.get_state(), "events": tracker.get_events()}
+    for env_idx in (0, 1):
+        found, reason = record_progress_results(env, env_idx)["progress"]["events"]
+        assert found == {
+            "step": 1,
+            "criteria_name": "found",
+            "sequence_name": "default_sequence",
+            "predicate_index": 0,
+            "predicate_name": found["predicate_name"],
+            "score_delta": 1.0,
+        }, "Events without details keep the plain record format."
+        assert reason["step"] == 2
+        assert reason["details"] == {"env": env_idx, "reason": ["visible"]}
+        assert json.loads(json.dumps(reason)) == reason
+    return True
+
+
 def test_tracked_criteria_never_end_the_episode():
     assert run_function_with_persistent_simulation_app(_test_tracked_criteria_never_end_the_episode)
 
@@ -212,3 +273,7 @@ def test_tracked_criteria_ignore_subtask_order():
 
 def test_success_requires_a_required_criteria_set():
     assert run_function_with_persistent_simulation_app(_test_success_requires_a_required_criteria_set)
+
+
+def test_event_details_are_recorded_at_the_transition():
+    assert run_function_with_persistent_simulation_app(_test_event_details_are_recorded_at_the_transition)

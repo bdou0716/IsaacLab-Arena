@@ -57,6 +57,15 @@ def _create_predicate_from_config(predicate, env):
     return functools.partial(predicate_cfg.func, **predicate_cfg.params)
 
 
+def _unwrap_predicate(predicate):
+    """Return the configured predicate inside a consecutive-step requirement and partial bindings."""
+    if isinstance(predicate, _TrueForConsecutiveSteps):
+        predicate = predicate.predicate
+    while isinstance(predicate, functools.partial):
+        predicate = predicate.func
+    return predicate
+
+
 @dataclass
 class PredicateEvent:
     """A single predicate transition event emitted by the progress tracker."""
@@ -81,6 +90,9 @@ class PredicateEvent:
 
     score_delta: float
     """Normalized score this advance added to the sequence."""
+
+    details: dict[str, object]
+    """Copy of the predicate's optional event_details(env_idx) mapping, taken when the predicate advanced."""
 
 
 @dataclass
@@ -327,9 +339,12 @@ class CompletionCriteriaRunner:
             # Update the advanced mask for the envs that were advanced.
             advanced = advanced | advance_mask
 
-            # Emit an event for each env where a predicate was advanced.
+            # Emit an event for each env where a predicate was advanced. Copy optional details now,
+            # because the predicate's state keeps changing after this step.
             pred_name = _predicate_repr(predicate)
+            event_details = getattr(_unwrap_predicate(predicate), "event_details", None)
             for env_idx in torch.nonzero(advance_mask, as_tuple=False).flatten().tolist():
+                details = copy.deepcopy(event_details(env_idx)) if event_details is not None else {}
                 events.append(
                     PredicateEvent(
                         env_idx=int(env_idx),
@@ -339,6 +354,7 @@ class CompletionCriteriaRunner:
                         predicate_index=chain_idx,
                         predicate_name=pred_name,
                         score_delta=float(score_weight),
+                        details=details,
                     )
                 )
 
@@ -591,12 +607,7 @@ class ProgressTracker:
         """
         for runner in self.runners:
             if runner.completion_criteria.name == criteria_name:
-                predicate = runner.predicate_chains[sequence_name][predicate_index][0]
-                if isinstance(predicate, _TrueForConsecutiveSteps):
-                    predicate = predicate.predicate
-                while isinstance(predicate, functools.partial):
-                    predicate = predicate.func
-                return predicate
+                return _unwrap_predicate(runner.predicate_chains[sequence_name][predicate_index][0])
         raise KeyError(f"Unknown completion criteria: {criteria_name!r}")
 
     def reset(self, env_ids: list[int] | torch.Tensor) -> None:
@@ -681,7 +692,7 @@ class ProgressTrackingRecorder(RecorderTerm):
             ],
             "events": [                                    # one list of PredicateEvent per env
                 [PredicateEvent(env_idx, step, criteria_name, sequence_name,
-                                predicate_index, predicate_name, score_delta), ...],
+                                predicate_index, predicate_name, score_delta, details), ...],
                 ...
             ],
         }
