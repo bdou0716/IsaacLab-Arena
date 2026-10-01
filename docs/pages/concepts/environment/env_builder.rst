@@ -59,6 +59,21 @@ to each manager are tabulated below:
 from each component into a set of complete managers. Then it merges these complete managers
 into a single ``ManagerBasedRLEnvCfg``.
 
+Each manager follows one explicit composition rule:
+
+* Scene entities, events, rewards, curriculum terms, commands, and recorder terms extend each other
+  through ``combine_unique``. Contributions keep their order and their own field order, and two
+  contributions must not define the same name. Recorder dataset settings declared by
+  ``RecorderManagerBaseCfg`` are shared, and the later contribution wins.
+* The builder's scene settings, such as ``num_envs`` and ``env_spacing``, come first, and a task
+  scene configuration may override them.
+* A later ordinary observation group replaces an earlier group of the same name, so a task can
+  override an embodiment's group. Camera terms from every contribution share one ``camera_obs`` group.
+* Events run in this order: background physics, embodiment, scene, task, placement, then variations.
+* The builder owns the recorder order. Environment recorders come first, once: metrics, progress
+  tracking, and, when trajectories are recorded, the scene-wide trajectory terms. Task recorders come
+  next, then each embodiment's own recorders, such as its end-effector poses.
+
 By default, the builder also solves spatial relations for placed objects and
 supported robot embodiments. Set
 ``ArenaEnvBuilderCfg(solve_relations=False)`` in Python to disable this step.
