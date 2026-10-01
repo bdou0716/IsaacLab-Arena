@@ -236,11 +236,15 @@ class JobSummary:
             detail = criteria_by_name.get(name, {}) if criteria_by_name else {}
             family = self._criteria_family_by_name.get(name, name)
             sequence = self._family_sequences.get(family, {})
-            active_names = [
-                _base_predicate_name(predicate)
-                for predicate in (detail.get("active_predicates") or {}).values()
-                if predicate
-            ]
+            # Success never waits for tracked criteria, so their unfired predicates are not blocked.
+            # Records without the flag predate tracked criteria, when every set was required.
+            active_names = []
+            if detail.get("required_for_success", True):
+                active_names = [
+                    _base_predicate_name(predicate)
+                    for predicate in (detail.get("active_predicates") or {}).values()
+                    if predicate
+                ]
             signals = []
             matched_blocked: set[str] = set()
             for index in sorted(sequence):
