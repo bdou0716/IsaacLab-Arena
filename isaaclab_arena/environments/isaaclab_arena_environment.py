@@ -47,7 +47,8 @@ class IsaacLabArenaEnvironment:
             name: The name of the environment.
             scene: The scene to use in the environment.
             embodiments: The robots in the environment, in action-column order. None or an empty
-                list gives an environment without a robot.
+                list gives an environment without a robot. Several robots each need a distinct
+                instance key. A robot alone may stay unkeyed.
             task: The task to use in the environment.
             teleop_device: The teleop device to use in the environment.
             env_cfg_callback: A callback that tunes the environment configuration after the
@@ -70,6 +71,7 @@ class IsaacLabArenaEnvironment:
         self.name = name
         self.scene = scene
         self.embodiments = list(embodiments or [])
+        self.validate_embodiments()
         self.task = task
         self.teleop_device = teleop_device
         self.env_cfg_callback = env_cfg_callback
@@ -87,3 +89,11 @@ class IsaacLabArenaEnvironment:
         assets = [asset for asset in self.scene.assets.values() if isinstance(asset, PlaceableAsset)]
         assets.extend(self.embodiments)
         return assets
+
+    def validate_embodiments(self) -> None:
+        """Require an instance key on every robot when there are several, and distinct scene keys."""
+        assert len(self.embodiments) <= 1 or all(
+            embodiment.instance_key is not None for embodiment in self.embodiments
+        ), "Several embodiments require an instance key on every robot"
+        scene_keys = [embodiment.get_scene_key() for embodiment in self.embodiments]
+        assert len(scene_keys) == len(set(scene_keys)), f"Embodiment scene keys must be unique: {scene_keys}"
