@@ -257,9 +257,7 @@ def _experiment_summary_line(summary: ExperimentSummary) -> str:
 
 
 def _render_funnel(funnel: CompletionCriteriaFunnel) -> str:
-    if not funnel.stages:
-        return ""
-    rows = []
+    rows = [] if funnel.stages else ['<p class="note">No predicate events recorded.</p>']
     for stage in funnel.stages:
         fraction = 0.0 if funnel.num_instances == 0 else stage.num_reached / funnel.num_instances
         step = min(stage.index, _MAX_FUNNEL_STAGE_STEP)

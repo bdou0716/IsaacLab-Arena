@@ -278,9 +278,12 @@ def test_run_page_names_its_policy_throughout(tmp_path):
 def test_run_page_shows_which_success_signals_fired_and_which_did_not(tmp_path):
     def record(index: int, reached: int) -> dict:
         names = ["objects_settled", "object_is_above_height(object_name='banana')", "object_on_destination()"]
-        criteria = {"score": reached / 3, "is_complete": reached == 3, "total_sequences": 1}
-        if reached < 3:
-            criteria["active_predicates"] = {"default_sequence": names[reached]}
+        criteria = {
+            "score": reached / 3,
+            "is_complete": reached == 3,
+            "total_sequences": 1,
+            "active_predicates": {"default_sequence": names[reached] if reached < 3 else None},
+        }
         return {
             "env_id": 0,
             "episode_in_env": index,
@@ -291,6 +294,7 @@ def test_run_page_shows_which_success_signals_fired_and_which_did_not(tmp_path):
                 "events": [
                     {
                         "criteria_name": "pick_and_place",
+                        "sequence_name": "default_sequence",
                         "predicate_index": i,
                         "predicate_name": names[i],
                         "step": 10 * i,
@@ -358,12 +362,32 @@ def test_run_page_reports_conflicting_criteria_family_sequences(tmp_path):
             "success": False,
             "progress": {
                 "criteria_by_name": {
-                    "subtask_0/pick": {"score": 0.0, "is_complete": False, "total_sequences": 1},
-                    "subtask_1/pick": {"score": 0.0, "is_complete": False, "total_sequences": 1},
+                    "subtask_0/pick": {
+                        "score": 0.0,
+                        "is_complete": False,
+                        "total_sequences": 1,
+                        "active_predicates": {"default_sequence": "second_predicate"},
+                    },
+                    "subtask_1/pick": {
+                        "score": 0.0,
+                        "is_complete": False,
+                        "total_sequences": 1,
+                        "active_predicates": {"default_sequence": "second_predicate"},
+                    },
                 },
                 "events": [
-                    {"criteria_name": "subtask_0/pick", "predicate_index": 0, "predicate_name": "first_predicate"},
-                    {"criteria_name": "subtask_1/pick", "predicate_index": 0, "predicate_name": "other_predicate"},
+                    {
+                        "criteria_name": "subtask_0/pick",
+                        "sequence_name": "default_sequence",
+                        "predicate_index": 0,
+                        "predicate_name": "first_predicate",
+                    },
+                    {
+                        "criteria_name": "subtask_1/pick",
+                        "sequence_name": "default_sequence",
+                        "predicate_index": 0,
+                        "predicate_name": "other_predicate",
+                    },
                 ],
             },
         })
@@ -377,6 +401,43 @@ def test_run_page_reports_conflicting_criteria_family_sequences(tmp_path):
     run_page = (tmp_path / "report" / "job_banana_in_bowl_pi0.html").read_text(encoding="utf-8")
     assert "Data issues" in run_page
     assert "conflicting predicate sequences" in run_page
+
+
+def test_task_page_shows_a_sequence_that_emitted_no_event(tmp_path):
+    run_dir = tmp_path / "banana_in_bowl_pi0"
+    run_dir.mkdir()
+    (run_dir / "episode_results_rebuild0.jsonl").write_text(
+        json.dumps({
+            "env_id": 0,
+            "episode_in_env": 0,
+            "success": False,
+            "progress": {
+                "criteria_by_name": {
+                    "reach": {
+                        "score": 0.5,
+                        "is_complete": False,
+                        "total_sequences": 2,
+                        "active_predicates": {"left": None, "right": "arrive"},
+                    }
+                },
+                "events": [{
+                    "criteria_name": "reach",
+                    "sequence_name": "left",
+                    "predicate_index": 0,
+                    "predicate_name": "arrive",
+                }],
+            },
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_run(tmp_path, "banana_in_bowl_cosmos")
+
+    build_report(tmp_path)
+
+    task_page = (tmp_path / "report" / "task_banana_in_bowl.html").read_text(encoding="utf-8")
+    assert "<h3>reach/left</h3>" in task_page
+    assert '<h3>reach/right</h3><p class="note">No predicate events recorded.</p>' in task_page
 
 
 def test_every_page_below_the_overview_can_climb_back_up(tmp_path):
