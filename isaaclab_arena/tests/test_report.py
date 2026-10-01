@@ -352,6 +352,65 @@ def test_unknown_blocked_predicate_is_shown_without_known_sequence(tmp_path):
     assert "never_seen" in run_page
 
 
+def test_unfired_tracked_criteria_are_not_shown_as_waiting(tmp_path):
+    # "fallen" fires in one episode, so the other episode shows its known signal unfired.
+    # "found" never fires, so its active predicate has no known signal to attach to.
+    def criteria(active_predicate: str | None, required_for_success: bool) -> dict:
+        return {
+            "score": float(active_predicate is None),
+            "is_complete": active_predicate is None,
+            "total_sequences": 1,
+            "active_predicates": {"default_sequence": active_predicate},
+            "required_for_success": required_for_success,
+        }
+
+    def record(index: int, fell: bool) -> dict:
+        events = [{
+            "criteria_name": "arrived",
+            "sequence_name": "default_sequence",
+            "predicate_index": 0,
+            "predicate_name": "robot_arrived",
+            "step": 8,
+        }]
+        if fell:
+            events.append({
+                "criteria_name": "fallen",
+                "sequence_name": "default_sequence",
+                "predicate_index": 0,
+                "predicate_name": "robot_fallen",
+                "step": 5,
+            })
+        return {
+            "env_id": 0,
+            "episode_in_env": index,
+            "success": True,
+            "progress": {
+                "overall_score": 1.0,
+                "all_complete": True,
+                "criteria_by_name": {
+                    "arrived": criteria(None, required_for_success=True),
+                    "fallen": criteria(None if fell else "robot_fallen", required_for_success=False),
+                    "found": criteria("object_found", required_for_success=False),
+                },
+                "events": events,
+            },
+        }
+
+    run_dir = tmp_path / "banana_in_bowl_pi0"
+    run_dir.mkdir()
+    (run_dir / "episode_results_rebuild0.jsonl").write_text(
+        "\n".join(json.dumps(record(index, fell)) for index, fell in enumerate((True, False))) + "\n",
+        encoding="utf-8",
+    )
+    _write_run(tmp_path, "banana_in_bowl_cosmos")
+
+    build_report(tmp_path)
+
+    run_page = (tmp_path / "report" / "job_banana_in_bowl_pi0.html").read_text(encoding="utf-8")
+    assert 'class="signal blocked"' not in run_page, "Success never waits for tracked criteria."
+    assert 'class="signal off" title="robot_fallen"' in run_page
+
+
 def test_run_page_reports_conflicting_criteria_family_sequences(tmp_path):
     run_dir = tmp_path / "banana_in_bowl_pi0"
     run_dir.mkdir()

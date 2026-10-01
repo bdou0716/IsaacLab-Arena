@@ -249,6 +249,10 @@ class JobSummary:
             family = self._criteria_family_by_name.get(name, name)
             sequences = self._family_sequences.get(family, {})
             active_predicates = detail.get("active_predicates") or {}
+            # Success never waits for tracked criteria, so their unfired predicates are not blocked.
+            # Records without the flag predate tracked criteria, when every set was required.
+            if not detail.get("required_for_success", True):
+                active_predicates = {}
             signals = []
             blocked_predicates = []
             for sequence_name in sorted(sequence_names_by_criteria[name]):
