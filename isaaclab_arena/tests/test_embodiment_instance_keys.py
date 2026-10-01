@@ -114,7 +114,7 @@ def _test_keyed_robot_modes(simulation_app):
     lookup.assert_called_once_with(RetargeterRegistry().convert_tuple_to_str(("keyboard", "franka_joint_pos")))
 
     for mode in ("mimic", "teleop", "xr"):
-        definition = IsaacLabArenaEnvironment("keyed_robot_mode", Scene(assets=[]), embodiment=robot)
+        definition = IsaacLabArenaEnvironment("keyed_robot_mode", Scene(assets=[]), embodiments=[robot])
         definition.teleop_device = device if mode == "teleop" else None
         builder = ArenaEnvBuilder(definition, ArenaEnvBuilderCfg(mimic=mode == "mimic", solve_relations=False))
         with patch("isaaclab_arena.environments.arena_env_builder.get_settings_manager") as settings:
@@ -140,9 +140,9 @@ def _test_keyed_franka_steps(simulation_app):
     )
 
     definition = CubeGoalPoseEnvironment().build(CubeGoalPoseEnvironmentCfg())
-    definition.embodiment = FrankaIKEmbodiment(
-        instance_key="arm", initial_pose=definition.embodiment.get_initial_pose()
-    )
+    definition.embodiments = [
+        FrankaIKEmbodiment(instance_key="arm", initial_pose=definition.embodiments[0].get_initial_pose())
+    ]
     env = ArenaEnvBuilder(
         definition, ArenaEnvBuilderCfg(num_envs=1, solve_relations=False, record_trajectories=True)
     ).make_registered()
@@ -195,10 +195,10 @@ def _test_unkeyed_franka_matches_main(simulation_app, embodiment_name):
     actual_definition = CubeGoalPoseEnvironment().build(environment_cfg)
     reference_definition = CubeGoalPoseEnvironment().build(environment_cfg)
     reference = frozen_embodiment[embodiment_name](enable_cameras=True)
-    reference.set_initial_pose(reference_definition.embodiment.get_initial_pose())
+    reference.set_initial_pose(reference_definition.embodiments[0].get_initial_pose())
     # The same joint pose CubeGoalPoseEnvironment sets on its production embodiment.
     reference.set_initial_joint_pose([0.0444, -0.1894, -0.1107, -2.5148, 0.0044, 2.3775, 0.6952, 0.0400, 0.0400])
-    reference_definition.embodiment = reference
+    reference_definition.embodiments = [reference]
     cfg = ArenaEnvBuilderCfg(
         num_envs=1, solve_relations=False, record_trajectories=True, recorder_dataset_filename="unkeyed_reference"
     )

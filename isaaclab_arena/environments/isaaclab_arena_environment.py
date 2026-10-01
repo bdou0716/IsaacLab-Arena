@@ -29,7 +29,7 @@ class IsaacLabArenaEnvironment:
         self,
         name: str,
         scene: Scene,
-        embodiment: EmbodimentBase | None = None,
+        embodiments: list[EmbodimentBase] | None = None,
         task: TaskBase | None = None,
         teleop_device: TeleopDeviceBase | None = None,
         env_cfg_callback: (
@@ -46,7 +46,8 @@ class IsaacLabArenaEnvironment:
         Args:
             name: The name of the environment.
             scene: The scene to use in the environment.
-            embodiment: The embodiment to use in the environment.
+            embodiments: The robots in the environment, in action-column order. None or an empty
+                list gives an environment without a robot.
             task: The task to use in the environment.
             teleop_device: The teleop device to use in the environment.
             env_cfg_callback: A callback that tunes the environment configuration after the
@@ -68,7 +69,7 @@ class IsaacLabArenaEnvironment:
         """
         self.name = name
         self.scene = scene
-        self.embodiment = embodiment
+        self.embodiments = list(embodiments or [])
         self.task = task
         self.teleop_device = teleop_device
         self.env_cfg_callback = env_cfg_callback
@@ -82,8 +83,7 @@ class IsaacLabArenaEnvironment:
         self.placement_layouts = placement_layouts
 
     def get_placement_assets(self) -> list[PlaceableAsset]:
-        """Return placeable scene assets and the embodiment."""
+        """Return placeable scene assets and the embodiments."""
         assets = [asset for asset in self.scene.assets.values() if isinstance(asset, PlaceableAsset)]
-        if self.embodiment is not None:
-            assets.append(self.embodiment)
+        assets.extend(self.embodiments)
         return assets
