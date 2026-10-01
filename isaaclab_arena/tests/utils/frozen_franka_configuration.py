@@ -95,9 +95,9 @@ class FrozenFrankaEmbodimentBase(EmbodimentBase):
     def get_recorder_term_cfg(self, record_trajectories: bool = False) -> Any:
         if not record_trajectories:
             return None
-        from isaaclab_arena.terms.recorders import make_trajectory_recorder_terms_cfg
+        from isaaclab_arena.terms.recorders import make_end_effector_pose_recorder_terms_cfg
 
-        return make_trajectory_recorder_terms_cfg(frame_transformer_names=["ee_frame"], asset_name="robot")
+        return make_end_effector_pose_recorder_terms_cfg(frame_transformer_names=["ee_frame"], asset_name="robot")
 
     def get_scene_key(self) -> str:
         return "robot"

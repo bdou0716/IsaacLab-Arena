@@ -54,8 +54,13 @@ from isaaclab_arena.relations.relation_solver_params import RelationSolverParams
 from isaaclab_arena.tasks.no_task import NoTask
 from isaaclab_arena.tasks.task_termination_cfg import TaskTerminationCfg
 from isaaclab_arena.terms.events import ResetBackgroundPhysics
-from isaaclab_arena.terms.recorders import ArenaEnvRecorderManagerCfg
-from isaaclab_arena.utils.configclass import combine_configclass_instances, make_configclass
+from isaaclab_arena.terms.recorders import (
+    ArenaEnvRecorderManagerCfg,
+    TrajectoryRecorderTermsBaseCfg,
+    validate_recorded_frame_names,
+)
+from isaaclab_arena.utils.cameras import combine_observation_cfgs
+from isaaclab_arena.utils.configclass import combine_configclass_instances, combine_unique, make_configclass
 from isaaclab_arena.utils.isaaclab_utils.warp_patch import install_empty_cpu_warp_to_torch_patch
 from isaaclab_arena.utils.multiprocess import get_local_rank
 from isaaclab_arena.utils.physics_backend import PhysicsBackend
@@ -339,15 +344,18 @@ class ArenaEnvBuilder:
         embodiment.configure_physics_backend(resolved_physics_backend)
         task = self.arena_env.task or NoTask()
         task.configure_for_embodiment(embodiment)
+        # The builder's scene settings come first, and a task scene configuration may override them.
         scene_cfg = combine_configclass_instances(
             "SceneCfg",
             self.interactive_scene_cfg,
-            self.arena_env.scene.get_scene_cfg(),
-            embodiment.get_scene_cfg(),
-            task.get_scene_cfg(),
+            combine_unique(
+                "SceneCfg",
+                self.arena_env.scene.get_scene_cfg(),
+                embodiment.get_scene_cfg(),
+                task.get_scene_cfg(),
+            ),
         )
-        observation_cfg = combine_configclass_instances(
-            "ObservationCfg",
+        observation_cfg = combine_observation_cfgs(
             self.arena_env.scene.get_observation_cfg(),
             embodiment.get_observation_cfg(),
             task.get_observation_cfg(),
@@ -386,7 +394,7 @@ class ArenaEnvBuilder:
             background_physics_events_cfg = BackgroundPhysicsEventsCfg()
         # Keep the background term first so its one-time snapshot observes the
         # composed startup state before any reset event can mutate scene entities.
-        events_cfg = combine_configclass_instances(
+        events_cfg = combine_unique(
             "EventsCfg",
             background_physics_events_cfg,
             embodiment.get_events_cfg(),
@@ -414,15 +422,19 @@ class ArenaEnvBuilder:
             ProgressTrackingRecorderManagerCfg() if task_termination_cfg.success else None
         )
 
-        # Base has to be specified explicitly to avoid type errors and not lose inheritance.
-        recorder_manager_cfg = combine_configclass_instances(
+        # The builder owns the recorder order: environment recorders once, then the task's, then the
+        # embodiment's own. Recorder dataset settings declared by RecorderManagerBaseCfg are shared, and the
+        # later contribution wins. Base has to be specified explicitly to avoid type errors and not lose inheritance.
+        recorder_manager_cfg = combine_unique(
             "RecorderManagerCfg",
             metrics_recorder_manager_cfg,
+            progress_tracking_recorder_cfg,
+            TrajectoryRecorderTermsBaseCfg() if self.cfg.record_trajectories else None,
             task.get_recorder_term_cfg(),
             embodiment.get_recorder_term_cfg(record_trajectories=self.cfg.record_trajectories),
-            progress_tracking_recorder_cfg,
             bases=(RecorderManagerBaseCfg,),
         )
+        validate_recorded_frame_names(scene_cfg, recorder_manager_cfg)
         recorder_manager_cfg = self._modify_recorder_cfg_dataset_filename(recorder_manager_cfg)
         # Eval runs overwrite the timestamped default so rebuilds do not clobber each other.
         if self.cfg.recorder_dataset_filename is not None:
@@ -430,21 +442,21 @@ class ArenaEnvBuilder:
         if self.cfg.recorder_dataset_export_dir_path is not None:
             recorder_manager_cfg.dataset_export_dir_path = self.cfg.recorder_dataset_export_dir_path
 
-        rewards_cfg = combine_configclass_instances(
+        rewards_cfg = combine_unique(
             "RewardsCfg",
             self.arena_env.scene.get_rewards_cfg(),
             embodiment.get_rewards_cfg(),
             task.get_rewards_cfg(),
         )
 
-        curriculum_cfg = combine_configclass_instances(
+        curriculum_cfg = combine_unique(
             "CurriculumCfg",
             self.arena_env.scene.get_curriculum_cfg(),
             embodiment.get_curriculum_cfg(),
             task.get_curriculum_cfg(),
         )
 
-        commands_cfg = combine_configclass_instances(
+        commands_cfg = combine_unique(
             "CommandsCfg",
             self.arena_env.scene.get_commands_cfg(),
             embodiment.get_commands_cfg(),
