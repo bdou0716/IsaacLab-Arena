@@ -12,6 +12,7 @@ evaluation, video, policy, environment, Isaac Sim, or Isaac Lab stacks.
 from __future__ import annotations
 
 import functools
+import json
 import pathlib
 import re
 from collections import defaultdict
@@ -271,7 +272,7 @@ class JobSummary:
                             name=label_prefix + predicate_names[index],
                             triggered=event is not None,
                             step=_as_int(event.get("step")) if event is not None else None,
-                            detail=str(event.get("predicate_name", "")) if event is not None else "",
+                            detail=_signal_detail(event),
                             blocked=blocked,
                         )
                     )
@@ -509,6 +510,15 @@ def _sequence_names_by_criteria(record: dict[str, Any]) -> dict[str, set[str]]:
     for criteria_name, sequence_name, _, _ in _indexed_events(record):
         sequence_names.setdefault(criteria_name, set()).add(sequence_name)
     return sequence_names
+
+
+def _signal_detail(event: dict[str, Any] | None) -> str:
+    """Return a fired signal's tooltip: its recorded details as sorted JSON, else its predicate name."""
+    if event is None:
+        return ""
+    if event.get("details"):
+        return json.dumps(event["details"], sort_keys=True)
+    return str(event.get("predicate_name", ""))
 
 
 def _mean(values: list[float]) -> float | None:

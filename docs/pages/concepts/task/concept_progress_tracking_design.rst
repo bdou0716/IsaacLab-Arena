@@ -428,6 +428,12 @@ For example, one entry of the JSONL record may look like this (placement predica
 The object has settled and been lifted: two of three predicates are complete, giving a score of ``0.67``.
 Placement is still required. The two events record when settling and lifting completed.
 
+A predicate implemented as a callable class can describe its transition with an
+``event_details(env_idx)`` method, which returns a JSON-serializable mapping for one environment.
+When the predicate advances, ``ProgressTracker`` copies that mapping into the event's ``details``
+field; the episode record and the report tooltip show it. The copy is taken at the transition
+because the predicate's state keeps changing afterwards.
+
 The recording schema uses the same criteria and sequence names as the runtime API. Older
 recordings that use ``objectives``, ``objective``, or ``group`` fields require conversion or
 regeneration before they can be read by the current report tools.
