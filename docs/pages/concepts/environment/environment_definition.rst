@@ -166,7 +166,7 @@ read across to see the correspondence.
 
                   return IsaacLabArenaEnvironment(
                       name=self.name,
-                      embodiment=embodiment,
+                      embodiments=[embodiment],
                       scene=Scene(assets=[
                           maple_table, light, cube, bowl, table,
                       ]),

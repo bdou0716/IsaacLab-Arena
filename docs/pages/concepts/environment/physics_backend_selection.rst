@@ -24,7 +24,7 @@ Authoring and CLI inputs:
    return IsaacLabArenaEnvironment(
        name="dexsuite_lift",
        scene=scene,
-       embodiment=embodiment,
+       embodiments=[embodiment],
        task=task,
        default_physics_backend=PhysicsBackend.NEWTON,
    )

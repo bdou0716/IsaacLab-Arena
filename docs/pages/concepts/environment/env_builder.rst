@@ -18,7 +18,7 @@ component contributes and merging them into a single
 
    environment = IsaacLabArenaEnvironment(
        name="manipulation_task",
-       embodiment=embodiment,
+       embodiments=[embodiment],
        scene=scene,
        task=task,
    )
