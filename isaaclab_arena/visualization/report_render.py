@@ -277,12 +277,18 @@ def _render_funnel(funnel: CompletionCriteriaFunnel) -> str:
 
 def _render_job_funnels(job: JobSummary) -> str:
     funnels = "".join(_render_funnel(funnel) for funnel in job.funnels)
-    if not funnels:
+    notice = ""
+    if job.has_incomplete_sequence_data:
+        notice = (
+            '<p class="note">Some attempts lack sequence names.'
+            " Chart percentages cover only attempts with identified sequences.</p>"
+        )
+    if not funnels and not notice:
         return ""
     return (
         f'<div class="funnel"><h3>{html.escape(job.policy or job.name)}</h3>'
         f'<p class="note">success {_percent(job.success_rate)} &middot; mean progress {_percent(job.mean_progress)}</p>'
-        "</div>"
+        f"{notice}</div>"
         + funnels
     )
 

@@ -273,10 +273,38 @@ def test_unknown_active_predicates_are_renderable_without_inventing_sequence_ind
     })
     job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[episode])
 
-    assert job.funnels == []
+    assert [(funnel.name, funnel.num_instances, funnel.stages) for funnel in job.funnels] == [("pick", 1, [])]
+    assert not job.has_incomplete_sequence_data
     criteria = job.criteria_for(episode)[0]
     assert criteria.signals == []
     assert criteria.blocked_predicates == ["never_seen_predicate"]
+
+
+def test_missing_sequence_names_are_flagged_without_assigning_attempts():
+    failed = _episode({"progress": {"criteria_by_name": {"reach": {"total_sequences": 1}}, "events": []}})
+    succeeded = _episode(
+        {
+            "progress": {
+                "criteria_by_name": {"reach": {"total_sequences": 1}},
+                "events": [_event("reach", "default_sequence", 0, "arrive")],
+            }
+        },
+        episode=1,
+    )
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[failed, succeeded])
+
+    assert job.has_incomplete_sequence_data
+    assert job.funnels[0].num_instances == 1
+    assert job.funnels[0].stages[0].num_reached == 1
+
+
+def test_partial_sequence_names_are_flagged():
+    episode = _episode(
+        {"progress": {"criteria_by_name": {"reach": {"total_sequences": 2, "active_predicates": {"left": "arrive"}}}}}
+    )
+    job = JobSummary(name="run", task="t", policy="p", cameras=[], episodes=[episode])
+
+    assert job.has_incomplete_sequence_data
 
 
 def test_sequences_keep_independent_funnels_and_event_steps():

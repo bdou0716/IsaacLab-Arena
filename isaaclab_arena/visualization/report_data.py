@@ -195,6 +195,18 @@ class JobSummary:
     def num_videos(self) -> int:
         return sum(len(episode.video_by_camera) for episode in self.episodes)
 
+    @property
+    def has_incomplete_sequence_data(self) -> bool:
+        """Return whether any criterion attempt lacks names for its recorded sequence count."""
+        for episode in self.episodes:
+            names_by_criteria = _sequence_names_by_criteria(episode.record)
+            for name, detail in _progress_criteria(episode.record).items():
+                names = names_by_criteria[name]
+                total = _as_int(detail.get("total_sequences"))
+                if not names or (total is not None and len(names) < total):
+                    return True
+        return False
+
     @functools.cached_property
     def funnels(self) -> list[CompletionCriteriaFunnel]:
         instances_by_sequence: dict[tuple[str, str], set[tuple[int, int, str]]] = defaultdict(set)
@@ -215,9 +227,6 @@ class JobSummary:
             sequences = self._family_sequences[family]
             for sequence_name in sorted(sequences):
                 predicate_names = sequences[sequence_name]
-                # An eventless sequence gets an empty funnel only beside sibling sequences.
-                if len(sequences) == 1 and not predicate_names:
-                    continue
                 stages = [
                     FunnelStage(
                         index=index,
