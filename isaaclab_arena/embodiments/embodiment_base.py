@@ -105,7 +105,7 @@ class EmbodimentBase(PlaceableAsset):
 
     def get_placement_geometry_source(self) -> ArticulationGeometrySpec:
         """Return the USD articulation state used to compute embodiment geometry."""
-        robot = self._get_robot_cfg()
+        robot = self.get_robot_cfg()
         spawn = robot.spawn
         assert spawn.usd_path is not None, "The robot articulation must use a USD spawn for placement"
         scale_x, scale_y, scale_z = spawn.scale or (1.0, 1.0, 1.0)
@@ -174,7 +174,7 @@ class EmbodimentBase(PlaceableAsset):
 
     def set_joint_initial_pos(self, joint_pos: Mapping[str, float]) -> None:
         """Update the robot's initial joint positions by joint name."""
-        self._get_robot_cfg().init_state.joint_pos.update(joint_pos)
+        self.get_robot_cfg().init_state.joint_pos.update(joint_pos)
 
     def get_initial_pose(self) -> Pose | PosePerEnv:
         """Env-local robot base pose, resolved in order: the explicit ``initial_pose`` override if set,
@@ -182,7 +182,7 @@ class EmbodimentBase(PlaceableAsset):
         if self.initial_pose is not None:
             return self.initial_pose
 
-        init_state = self._get_robot_cfg().init_state
+        init_state = self.get_robot_cfg().init_state
         return Pose(
             position_xyz=tuple(float(v) for v in init_state.pos),
             rotation_xyzw=tuple(float(v) for v in init_state.rot),
@@ -361,7 +361,7 @@ class EmbodimentBase(PlaceableAsset):
 
         return transform_configclass_instance(cfg, name_fields, bases=bases)
 
-    def _get_robot_cfg(self) -> Any:
+    def get_robot_cfg(self) -> Any:
         """Return the robot articulation configuration stored in ``scene_config`` under the scene key."""
         robot = getattr(self.scene_config, self.get_scene_key(), None)
         assert robot is not None, f"scene_config.{self.get_scene_key()} must be populated"

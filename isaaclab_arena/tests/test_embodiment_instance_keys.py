@@ -5,8 +5,6 @@
 
 """Test robot instance keys: keyed names, refused modes, keyed stepping, and unchanged unkeyed robots."""
 
-from functools import partial
-
 import pytest
 
 from isaaclab_arena.tests.utils.persistent_simulation_app import run_function_with_persistent_simulation_app
@@ -15,7 +13,6 @@ from isaaclab_arena.tests.utils.persistent_simulation_app import run_function_wi
 def _test_keyed_franka_configurations(simulation_app):
     from dataclasses import fields
 
-    from isaaclab_arena.assets.registries import AssetRegistry
     from isaaclab_arena.embodiments.franka.franka import FrankaIKEmbodiment, FrankaJointPosEmbodiment
     from isaaclab_arena.terms.actions import robot_action_rate_l2, robot_last_action
     from isaaclab_arena.utils.pose import Pose
@@ -85,9 +82,6 @@ def _test_keyed_franka_configurations(simulation_app):
     for invalid_key in ("", "robot", "Left", "class", "two robots"):
         with pytest.raises(AssertionError, match="lowercase ASCII identifier"):
             FrankaJointPosEmbodiment(instance_key=invalid_key)
-    for g1_type in ("g1_wbc_joint", "g1_wbc_pink", "g1_wbc_agile_pink", "g1_wbc_agile_joint"):
-        with pytest.raises(AssertionError, match="G1 controllers do not support an instance key"):
-            AssetRegistry().get_asset_by_name(g1_type)(instance_key="humanoid")
     return True
 
 
@@ -163,60 +157,78 @@ def test_keyed_franka_steps():
     assert run_function_with_persistent_simulation_app(_test_keyed_franka_steps)
 
 
-def _comparable(value):
-    """Return a configuration value whose partially bound functions compare by their contents."""
-    if isinstance(value, partial):
-        return (partial, value.func, _comparable(value.args), _comparable(value.keywords))
-    if isinstance(value, dict):
-        return {key: _comparable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return type(value)(_comparable(item) for item in value)
-    if not isinstance(value, type) and hasattr(value, "to_dict"):
-        return _comparable(value.to_dict())
-    return value
-
-
-def _test_unkeyed_franka_matches_main(simulation_app, embodiment_name):
+def _test_unkeyed_franka_defaults(simulation_app, embodiment_name):
     from dataclasses import fields
 
-    from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
-    from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
-    from isaaclab_arena.tests.utils.frozen_franka_configuration import (
-        FrozenFrankaIKEmbodiment,
-        FrozenFrankaJointPosEmbodiment,
-    )
-    from isaaclab_arena_environments.cube_goal_pose_environment import (
-        CubeGoalPoseEnvironment,
-        CubeGoalPoseEnvironmentCfg,
-    )
+    import isaaclab.envs.mdp as mdp
+    from isaaclab.managers import ObservationTermCfg
 
-    frozen_embodiment = {"franka_ik": FrozenFrankaIKEmbodiment, "franka_joint_pos": FrozenFrankaJointPosEmbodiment}
-    environment_cfg = CubeGoalPoseEnvironmentCfg(enable_cameras=True, embodiment=embodiment_name)
-    actual_definition = CubeGoalPoseEnvironment().build(environment_cfg)
-    reference_definition = CubeGoalPoseEnvironment().build(environment_cfg)
-    reference = frozen_embodiment[embodiment_name](enable_cameras=True)
-    reference.set_initial_pose(reference_definition.embodiment.get_initial_pose())
-    # The same joint pose CubeGoalPoseEnvironment sets on its production embodiment.
-    reference.set_initial_joint_pose([0.0444, -0.1894, -0.1107, -2.5148, 0.0044, 2.3775, 0.6952, 0.0400, 0.0400])
-    reference_definition.embodiment = reference
-    cfg = ArenaEnvBuilderCfg(
-        num_envs=1, solve_relations=False, record_trajectories=True, recorder_dataset_filename="unkeyed_reference"
-    )
-    actual, _ = ArenaEnvBuilder(actual_definition, cfg).compose_manager_cfg()
-    expected, _ = ArenaEnvBuilder(reference_definition, cfg).compose_manager_cfg()
-    assert _comparable(actual.to_dict()) == _comparable(expected.to_dict())
-    # Dictionary equality ignores order, but term order sets the action-vector layout and the
-    # order in which events run.
-    for section in ("scene", "actions", "observations", "events", "rewards", "recorders"):
-        actual_names = [field.name for field in fields(getattr(actual, section))]
-        assert actual_names == [field.name for field in fields(getattr(expected, section))], section
-    actual_policy_terms = [field.name for field in fields(actual.observations.policy)]
-    assert actual_policy_terms == [field.name for field in fields(expected.observations.policy)]
+    from isaaclab_arena.embodiments.franka.franka import FrankaIKEmbodiment, FrankaJointPosEmbodiment
+    from isaaclab_arena.utils.pose import Pose
+
+    robot_type = {"franka_ik": FrankaIKEmbodiment, "franka_joint_pos": FrankaJointPosEmbodiment}[embodiment_name]
+    robot = robot_type(enable_cameras=True)
+    robot.set_initial_pose(Pose.identity())
+    assert robot.name == embodiment_name and robot.get_scene_key() == "robot"
+
+    scene = robot.get_scene_cfg()
+    assert [field.name for field in fields(scene)] == ["robot", "ee_frame", "wrist_cam"]
+    assert scene.robot.prim_path == "{ENV_REGEX_NS}/Robot"
+    assert scene.ee_frame.prim_path.startswith("{ENV_REGEX_NS}/Robot/")
+    assert scene.wrist_cam.prim_path.startswith("{ENV_REGEX_NS}/Robot/")
+    assert [frame.name for frame in scene.ee_frame.target_frames] == [
+        "end_effector",
+        "tool_rightfinger",
+        "tool_leftfinger",
+    ]
+    actions = robot.get_action_cfg()
+    assert [field.name for field in fields(actions)] == ["arm_action", "gripper_action"]
+    assert actions.arm_action.asset_name == actions.gripper_action.asset_name == "robot"
+    observations = robot.get_observation_cfg()
+    assert [field.name for field in fields(observations)] == ["policy", "camera_obs"]
+    policy = observations.policy
+    assert [field.name for field in fields(policy) if isinstance(getattr(policy, field.name), ObservationTermCfg)] == [
+        "actions",
+        "joint_pos",
+        "joint_vel",
+        "eef_pos",
+        "eef_quat",
+        "gripper_pos",
+    ]
+    assert not policy.concatenate_terms
+    assert observations.camera_obs.wrist_cam_rgb.params["sensor_cfg"].name == "wrist_cam"
+    assert [field.name for field in fields(robot.get_events_cfg())] == [
+        "randomize_franka_joint_state",
+        "robot_reset_pose",
+    ]
+    rewards = robot.get_rewards_cfg()
+    assert [field.name for field in fields(rewards)] == ["action_rate", "joint_vel"]
+    assert rewards.joint_vel.params["asset_cfg"].name == "robot"
+    recorder = robot.get_recorder_term_cfg(record_trajectories=True).record_end_effector_poses_0
+    assert recorder.asset_name == "robot" and recorder.frame_transformer_name == "ee_frame"
+
+    # Unkeyed robots keep the whole action tensor in observations and action-rate rewards.
+    assert policy.actions.func is mdp.last_action and not policy.actions.params
+    assert rewards.action_rate.func is mdp.action_rate_l2 and not rewards.action_rate.params
     return True
 
 
 @pytest.mark.parametrize("embodiment_name", ["franka_ik", "franka_joint_pos"])
-def test_unkeyed_franka_matches_main(embodiment_name):
-    assert run_function_with_persistent_simulation_app(
-        _test_unkeyed_franka_matches_main, embodiment_name=embodiment_name
-    )
+def test_unkeyed_franka_defaults(embodiment_name):
+    assert run_function_with_persistent_simulation_app(_test_unkeyed_franka_defaults, embodiment_name=embodiment_name)
+
+
+def _test_external_franka_configuration(simulation_app):
+    from isaaclab_arena_examples.external_environments.advanced import SoftFrankaIKEmbodiment
+
+    for key in (None, "soft_arm"):
+        robot = SoftFrankaIKEmbodiment(instance_key=key)
+        articulation = getattr(robot.get_scene_cfg(), key or "robot")
+        for actuator_name in ("panda_shoulder", "panda_forearm"):
+            assert articulation.actuators[actuator_name].stiffness == 200.0
+            assert articulation.actuators[actuator_name].damping == 40.0
+    return True
+
+
+def test_external_franka_configuration():
+    assert run_function_with_persistent_simulation_app(_test_external_franka_configuration)

@@ -147,7 +147,7 @@ class FrankaEmbodimentBase(EmbodimentBase):
         assert (
             len(initial_joint_pose) == expected_joint_count
         ), f"expected {expected_joint_count} joint positions, got {len(initial_joint_pose)}"
-        robot = self._get_robot_cfg()
+        robot = self.get_robot_cfg()
         robot.init_state = robot.init_state.replace(joint_pos=dict(zip(_FRANKA_JOINT_NAMES, initial_joint_pose)))
 
     def get_ee_frame_name(self, arm_mode: ArmMode) -> str:

@@ -54,9 +54,7 @@ class G1EmbodimentBase(EmbodimentBase):
         initial_pose: Pose | None = None,
         concatenate_observation_terms: bool = False,
         arm_mode: ArmMode | None = None,
-        instance_key: str | None = None,
     ):
-        assert instance_key is None, "G1 controllers do not support an instance key"
         super().__init__(enable_cameras, initial_pose, concatenate_observation_terms, arm_mode)
         # TODO(xinjieyao, 2026.09.17): Add a gripper implementation for the G1 embodiment.
         # Configuration structs
@@ -124,9 +122,8 @@ class G1WBCJointEmbodiment(G1EmbodimentBase):
         enable_cameras: bool = False,
         initial_pose: Pose | None = None,
         lock_waist: bool = False,
-        instance_key: str | None = None,
     ):
-        super().__init__(enable_cameras, initial_pose, instance_key=instance_key)
+        super().__init__(enable_cameras, initial_pose)
         self.action_config = G1WBCJointActionCfg()
         self.observation_config = G1WBCJointObservationsCfg()
         self.observation_config.policy.concatenate_terms = self.concatenate_observation_terms
@@ -146,9 +143,8 @@ class G1WBCPinkEmbodiment(G1EmbodimentBase):
         enable_cameras: bool = False,
         initial_pose: Pose | None = None,
         lock_waist: bool = False,
-        instance_key: str | None = None,
     ):
-        super().__init__(enable_cameras, initial_pose, instance_key=instance_key)
+        super().__init__(enable_cameras, initial_pose)
         self.action_config = G1WBCPinkActionCfg()
         if lock_waist:
             _remove_waist_from_pink_ik_action_config(self.action_config)
@@ -175,9 +171,8 @@ class G1WBCAgilePinkEmbodiment(G1EmbodimentBase):
         enable_cameras: bool = False,
         initial_pose: Pose | None = None,
         lock_waist: bool = False,
-        instance_key: str | None = None,
     ):
-        super().__init__(enable_cameras, initial_pose, instance_key=instance_key)
+        super().__init__(enable_cameras, initial_pose)
         self.scene_config = G1AgileSceneCfg()
         self.action_config = G1WBCAgilePinkActionCfg()
         if lock_waist:
@@ -208,9 +203,8 @@ class G1WBCAgileJointEmbodiment(G1EmbodimentBase):
         enable_cameras: bool = False,
         initial_pose: Pose | None = None,
         lock_waist: bool = False,
-        instance_key: str | None = None,
     ):
-        super().__init__(enable_cameras, initial_pose, instance_key=instance_key)
+        super().__init__(enable_cameras, initial_pose)
         self.scene_config = G1AgileSceneCfg()
         self.action_config = G1WBCAgileJointActionCfg()
         self.observation_config = G1WBCJointObservationsCfg()
