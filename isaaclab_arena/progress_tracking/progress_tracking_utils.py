@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable
+from typing import Protocol, runtime_checkable
 
 from isaaclab.managers import TerminationTermCfg
 
@@ -18,6 +19,19 @@ from isaaclab_arena.tasks.predicates.temporal import TrueForConsecutiveStepsCfg,
 Predicate = Callable | TerminationTermCfg | TrueForConsecutiveStepsCfg
 PredicateSequence = list[Predicate] | list[tuple[Predicate, float]]
 PredicateSequences = dict[str, PredicateSequence]
+
+
+@runtime_checkable
+class PredicateEventDetails(Protocol):
+    """Optional event measurements supplied by a predicate.
+
+    Ordinary callable predicates need no extra method. Implement this method to
+    record measurements when a predicate advances. The tracker copies the result.
+    """
+
+    def event_details(self, env_idx: int) -> dict[str, object]:
+        """Return JSON-serializable measurements for one environment at this transition."""
+        ...
 
 
 DEFAULT_SEQUENCE_NAME = "default_sequence"

@@ -16,7 +16,11 @@ from isaaclab.managers.recorder_manager import RecorderManagerBaseCfg, RecorderT
 from isaaclab.utils.configclass import configclass
 
 from isaaclab_arena.progress_tracking.completion_criteria import CompletionCriteria, CriteriaCompletionMode
-from isaaclab_arena.progress_tracking.progress_tracking_utils import DEFAULT_SEQUENCE_NAME, _predicate_repr
+from isaaclab_arena.progress_tracking.progress_tracking_utils import (
+    DEFAULT_SEQUENCE_NAME,
+    PredicateEventDetails,
+    _predicate_repr,
+)
 from isaaclab_arena.tasks.predicates.temporal import TrueForConsecutiveStepsCfg, _TrueForConsecutiveSteps
 
 
@@ -342,7 +346,8 @@ class CompletionCriteriaRunner:
             # Emit an event for each env where a predicate was advanced. Copy optional details now,
             # because the predicate's state keeps changing after this step.
             pred_name = _predicate_repr(predicate)
-            event_details = getattr(_unwrap_predicate(predicate), "event_details", None)
+            source = _unwrap_predicate(predicate)
+            event_details = source.event_details if isinstance(source, PredicateEventDetails) else None
             for env_idx in torch.nonzero(advance_mask, as_tuple=False).flatten().tolist():
                 details = copy.deepcopy(event_details(env_idx)) if event_details is not None else {}
                 events.append(

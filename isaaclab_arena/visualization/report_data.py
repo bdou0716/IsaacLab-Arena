@@ -155,12 +155,15 @@ class JobSummary:
 
     _criteria_family_by_name: dict[str, str] = field(init=False, repr=False)
     _family_sequences: dict[str, dict[int, str]] = field(init=False, repr=False)
+    _criteria_sequences: dict[str, dict[int, str]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._criteria_family_by_name, family_issues = _build_criteria_family_map(self.name, self.episodes)
         self._family_sequences, sequence_issues = _build_family_sequences(
             self.name, self.episodes, self._criteria_family_by_name
         )
+        # Episode rows use only this exact criterion's observations across episodes.
+        self._criteria_sequences, _ = _build_family_sequences(self.name, self.episodes, {})
         self.issues.extend(family_issues)
         self.issues.extend(sequence_issues)
 
@@ -236,7 +239,7 @@ class JobSummary:
         for name in names:
             detail = criteria_by_name.get(name, {}) if criteria_by_name else {}
             family = self._criteria_family_by_name.get(name, name)
-            sequence = self._family_sequences.get(family, {})
+            sequence = self._criteria_sequences.get(name, {})
             # Success never waits for tracked criteria, so their unfired predicates are not blocked.
             # Records without the flag predate tracked criteria, when every set was required.
             active_names = []

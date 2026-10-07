@@ -428,8 +428,10 @@ For example, one entry of the JSONL record may look like this (placement predica
 The object has settled and been lifted: two of three predicates are complete, giving a score of ``0.67``.
 Placement is still required. The two events record when settling and lifting completed.
 
-A predicate implemented as a callable class can describe its transition with an
-``event_details(env_idx)`` method, which returns a JSON-serializable mapping for one environment.
+A callable predicate may implement the optional ``PredicateEventDetails`` interface from
+``isaaclab_arena.progress_tracking.progress_tracking_utils``.
+Its ``event_details(env_idx)`` method returns a JSON-serializable dictionary for one environment.
+Ordinary callable predicates need no extra method and record an empty dictionary.
 When the predicate advances, ``ProgressTracker`` copies that mapping into the event's ``details``
 field; the episode record and the report tooltip show it. The copy is taken at the transition
 because the predicate's state keeps changing afterwards.

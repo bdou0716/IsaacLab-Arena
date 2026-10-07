@@ -350,6 +350,39 @@ def test_unknown_blocked_predicate_is_shown_without_known_sequence(tmp_path):
     assert "never_seen" in run_page
 
 
+def test_related_criteria_report_three_of_three_signals(tmp_path):
+    run_dir = tmp_path / "banana_in_bowl_pi0"
+    run_dir.mkdir()
+    record = {
+        "env_id": 0,
+        "episode_in_env": 0,
+        "success": True,
+        "progress": {
+            "overall_score": 1.0,
+            "criteria_by_name": {
+                "subtask_0/check": {"is_complete": True, "total_sequences": 1},
+                "subtask_1/check": {"is_complete": True, "total_sequences": 1, "required_for_success": False},
+            },
+            "events": [
+                {"criteria_name": name, "predicate_index": index, "predicate_name": predicate}
+                for name, index, predicate in (
+                    ("subtask_0/check", 0, "ready"),
+                    ("subtask_1/check", 0, "ready"),
+                    ("subtask_1/check", 1, "inspected"),
+                )
+            ],
+        },
+    }
+    (run_dir / "episode_results_rebuild0.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    _write_run(tmp_path, "banana_in_bowl_cosmos")
+
+    build_report(tmp_path)
+
+    run_page = (tmp_path / "report" / "job_banana_in_bowl_pi0.html").read_text(encoding="utf-8")
+    assert "3 of 3 known signals triggered" in run_page
+    assert 'class="signal blocked"' not in run_page
+
+
 def test_unfired_tracked_criteria_are_not_shown_as_waiting(tmp_path):
     # "fallen" fires in one episode, so the other episode shows its known signal unfired.
     # "found" never fires, so its active predicate has no known signal to attach to.
