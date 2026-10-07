@@ -114,8 +114,13 @@ def _test_two_robots(simulation_app, output_dir, cameras=False):
         for name, width in zip(manager.active_terms, manager.action_term_dim, strict=True):
             widths[manager.get_term(name).cfg.asset_name] += width
         assert widths == {"left": 8, "right": 8}
-        for _ in range(2):
-            env.step(torch.zeros(env.action_space.shape, device=env.unwrapped.device))
+        # Each robot's action observation shows only its own raw action columns.
+        for right_action in (0.25, -0.5):
+            actions = torch.zeros(env.action_space.shape, device=env.unwrapped.device)
+            actions[:, :8] = right_action
+            observations, _, _, _, _ = env.step(actions)
+            torch.testing.assert_close(observations["right_policy"]["actions"], actions[:, :8])
+            torch.testing.assert_close(observations["left_policy"]["actions"], actions[:, 8:])
         # Each robot's action-rate reward reads only its own action columns.
         manager.action.zero_()
         manager.prev_action.zero_()

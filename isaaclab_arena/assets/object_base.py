@@ -21,6 +21,7 @@ from isaaclab_arena.terms.events import (
     reset_articulation_pose_and_joints,
     reset_articulation_pose_per_env_and_joints,
     reset_articulation_random_pose_and_joints,
+    reset_articulation_to_default,
     set_object_pose,
     set_object_pose_per_env,
 )
@@ -84,13 +85,17 @@ class RootedObjectBase(ObjectBase):
             self.add_variation(ObjectMassVariation(self.name))
             self.add_variation(ObjectDisappearVariation(self.name))
         self.initial_velocity: Velocity | None = None
+        self.reset_pose = True
 
     def get_event_cfg(self) -> tuple[str, EventTermCfg | None]:
         """Return the reset event, keeping an articulation's joint reset when another event owns its root."""
         name, event_cfg = super().get_event_cfg()
         if event_cfg is None and self.object_type == ObjectType.ARTICULATION:
+            reset_func = reset_articulation_joints
+            if self.get_initial_pose() is None and self.reset_pose:
+                reset_func = reset_articulation_to_default
             event_cfg = EventTermCfg(
-                func=reset_articulation_joints,
+                func=reset_func,
                 mode="reset",
                 params={"asset_cfg": SceneEntityCfg(name)},
             )
@@ -123,13 +128,11 @@ class RootedObjectBase(ObjectBase):
         self._pose_event_cfg = self._build_reset_event()
 
     def _requires_reset_pose_event(self) -> bool:
-        """Whether a reset-event for the initial pose should be generated.
-
-        Subclasses may override to add extra conditions (e.g. a ``reset_pose`` flag).
-        """
-        return self.get_initial_pose() is not None and self.object_type in (
-            ObjectType.RIGID,
-            ObjectType.ARTICULATION,
+        """Whether a reset event for the initial pose should be generated."""
+        return (
+            self.reset_pose
+            and self.get_initial_pose() is not None
+            and self.object_type in (ObjectType.RIGID, ObjectType.ARTICULATION)
         )
 
     def _build_reset_event(self) -> EventTermCfg | None:
